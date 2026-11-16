@@ -1,0 +1,15 @@
+# GC 模型目录：模型放项目根 models/ 下，不进入 git
+# 启动时 cwd 为项目根，故 base_path 用相对路径 models
+gc:
+    base_path: models
+    checkpoints: checkpoints
+    clip: clip
+    clip_vision: clip_vision
+    controlnet: controlnet
+    diffusion_models: diffusion_models
+    embeddings: embeddings
+    loras: loras
+    text_encoders: text_encoders
+    unet: unet
+    upscale_models: upscale_models
+    vae: vae
