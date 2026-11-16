@@ -41,6 +41,30 @@ class EngineProbe(QThread):
             self.result.emit(False)
 
 
+class EngineStarter(QThread):
+    """点生成时若引擎没起，就拉起它并轮询端口，用户不必自己开命令行。"""
+    result = pyqtSignal(bool)
+
+    def __init__(self, host="127.0.0.1", port=8188, tries=90):
+        super().__init__()
+        self.host = host
+        self.port = port
+        self.tries = tries
+
+    def run(self):
+        from core.comfy_client import ComfyClient
+        c = ComfyClient(host=self.host, port=self.port)
+        for _ in range(self.tries):
+            try:
+                if c.is_up():
+                    self.result.emit(True)
+                    return
+            except Exception:
+                pass
+            self.msleep(2000)
+        self.result.emit(False)
+
+
 class InstallWorker(QThread):
     progress = pyqtSignal(int, str)
     done = pyqtSignal()

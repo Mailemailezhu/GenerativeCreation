@@ -22,8 +22,20 @@
 
 ## 启动
 
-1. 引擎：`scripts/start-engine.ps1`（监听 127.0.0.1:8188；`--fast-disk` 让权重从 NVMe 流式加载）
-2. 界面：`app/venv/Scripts/python.exe app/main.py`
+1. 界面：`app/venv/Scripts/python.exe app/main.py`，或双击项目根目录的 `GC.lnk`（打包版）
+2. 引擎：不用手动开。第一次点「生成预览图」时程序自己拉起 `engine/venv` 里的 ComfyUI
+   （监听 127.0.0.1:8188，`--fast-disk` 让权重从 NVMe 流式加载，约 40 秒起好），
+   日志写到 `data/engine.log`。想提前预热可以走「文件 → 启动本地引擎」，或运行 `scripts/start-engine.ps1`。
+
+## 打包版
+
+`scripts/build-release.ps1` 用 PyInstaller 打成 `dist/GC/GC.exe`（onedir），并生成：
+
+- `GC.lnk`：项目根目录的快捷方式，工作目录指向项目根，所以 `models/`、`workflows/`、`config/` 都按相对路径找到
+- `release/GC-<版本>-windows-x64.zip`：不含模型（体积太大），解压到项目根旁边即可复用同一套 `models/`
+
+自检：`dist/GC/GC.exe --selftest` 会在 `data/_selftest.png` 截图并写 `data/_selftest.txt`，
+用来确认打包后资源路径没断。
 
 ## 从 LrC 启动
 

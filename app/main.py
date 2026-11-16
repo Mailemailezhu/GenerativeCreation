@@ -1,5 +1,6 @@
 """GC：本地 AI 图像创作工作台。"""
 import os
+import subprocess
 import sys
 
 import numpy as np
@@ -19,6 +20,11 @@ ROOT = paths.root()
 DATA = os.path.join(ROOT, "data")
 MODELS = os.path.join(ROOT, "models")
 API_PATH = os.path.join(ROOT, "config", "api_models.json")
+ENGINE_PY = os.path.join(ROOT, "engine", "venv", "Scripts", "python.exe")
+ENGINE_ARGS = [os.path.join("engine", "ComfyUI", "main.py"),
+               "--listen", "127.0.0.1", "--port", "8188",
+               "--extra-model-paths-config", os.path.join("config", "extra_model_paths.yaml"),
+               "--fast-disk"]  # 三块盘都是 NVMe，权重直接从磁盘流式加载
 os.makedirs(DATA, exist_ok=True)
 
 from core import apimodels, cache, catalog, exporter, hwprobe, lrc, pipeline, prompt_tools
@@ -32,7 +38,7 @@ from ui.model_page import ModelPage
 from ui.gear_button import GearButton
 from ui.preview import PreviewWindow
 from ui.preview_settings import PreviewSettings
-from ui.worker import EngineProbe, GenWorker
+from ui.worker import EngineProbe, EngineStarter, GenWorker
 
 QSS = """
 QMainWindow, QWidget { background: #2d2d2d; color: #d0d0d0;
@@ -130,6 +136,9 @@ class MainWindow(QMainWindow):
         self._source_png = None
         self._draft_path = None
         self._busy = False
+        self._engine_ok = False
+        self._engine_proc = None
+        self._pending = None
         self._worker = None
         # 预览档按原图长边等比缩放的百分比，0.10 就是 10%
         self.preview_ratio = 0.10
@@ -163,6 +172,9 @@ class MainWindow(QMainWindow):
             a.triggered.connect(slot)
             m.addAction(a)
         m.addSeparator()
+        a = QAction("启动本地引擎", self)
+        a.triggered.connect(self.launch_engine)
+        m.addAction(a)
         a = QAction("退出", self)
         a.setShortcut("Ctrl+Q")
         a.triggered.connect(self.close)
@@ -456,12 +468,63 @@ class MainWindow(QMainWindow):
         self._probe.start()
 
     def on_engine_state(self, ok):
+        self._engine_ok = bool(ok)
         if ok:
             self.sb_engine.setText("● 引擎就绪")
             self.sb_engine.setStyleSheet("color:#5cb85c;")
         else:
             self.sb_engine.setText("● 引擎未启动")
             self.sb_engine.setStyleSheet("color:#e0a030;")
+
+    def launch_engine(self):
+        """手动或用例触发时拉起 ComfyUI；已起过就直接复用。"""
+        if self._engine_proc and self._engine_proc.poll() is None:
+            return True
+        if not os.path.exists(ENGINE_PY):
+            QMessageBox.warning(self, "启动失败",
+                                "找不到引擎的 Python：\n%s\n\n先运行 scripts/start-engine.ps1 完成首次安装。" % ENGINE_PY)
+            return False
+        flags = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
+        log = open(os.path.join(DATA, "engine.log"), "ab")
+        self._engine_proc = subprocess.Popen([ENGINE_PY] + ENGINE_ARGS, cwd=ROOT,
+                                            creationflags=flags, stdout=log, stderr=log)
+        return True
+
+    def ensure_engine(self, kw, label):
+        """远程 API 档不需要本地引擎；本地档引擎没起就先拉起来再生成。"""
+        if kw.get("fn") is not None or self._engine_ok:
+            self._start(kw, label)
+            return
+        if not self.launch_engine():
+            return
+        self._pending = (kw, label)
+        self._busy = True
+        self.btn_gen.setEnabled(False)
+        self.btn_apply.setEnabled(False)
+        self.pb.setValue(0)
+        self.pb_label.setText("0%")
+        self.pb.show()
+        self.pb_label.show()
+        self.statusBar().showMessage("正在启动本地引擎（首次加载约 40 秒）…")
+        self._starter = EngineStarter()
+        self._starter.result.connect(self.on_engine_ready)
+        self._starter.start()
+
+    def on_engine_ready(self, ok):
+        self._busy = False
+        pending, self._pending = self._pending, None
+        if ok and pending:
+            self.on_engine_state(True)
+            self._start(pending[0], pending[1])
+            return
+        self.pb.hide()
+        self.pb_label.hide()
+        self.btn_gen.setEnabled(True)
+        self.btn_apply.setEnabled(bool(self._draft_path))
+        self.statusBar().showMessage("引擎启动失败，详见 data/engine.log")
+        QMessageBox.warning(self, "引擎启动失败",
+                            "端口 8188 在 3 分钟内没有起来。\n日志：data/engine.log"
+                            "\n首次使用请先运行 scripts/start-engine.ps1 装好依赖与模型。")
 
     def open_model_page(self):
         dlg = ModelPage(MODELS, self)
@@ -704,7 +767,7 @@ class MainWindow(QMainWindow):
         if not prompt:
             QMessageBox.information(self, "提示", "请先写提示词。")
             return
-        self._start(self._gen_kw(
+        self.ensure_engine(self._gen_kw(
             prompt=prompt,
             out_path=os.path.join(DATA, "_gc_preview.png"),
             stage="draft",
@@ -715,7 +778,7 @@ class MainWindow(QMainWindow):
             return
         base = self._src_orig or os.path.join(DATA, "result.png")
         out = os.path.splitext(base)[0] + "-AI.png"
-        self._start(self._gen_kw(
+        self.ensure_engine(self._gen_kw(
             prompt=self.prompt_edit.toPlainText().strip(),
             out_path=out,
             stage="final",
