@@ -8,10 +8,11 @@ from PIL import Image
 from PyQt5.QtCore import QSize, Qt, QTimer
 from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import (QAction, QActionGroup, QApplication, QCheckBox, QComboBox,
-                             QDockWidget,
+                             QDockWidget, QFrame,
                              QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout,
                              QLabel, QMainWindow, QMessageBox, QProgressBar, QPushButton,
-                             QSlider, QSpinBox, QTextEdit, QToolBar, QVBoxLayout, QWidget)
+                             QScrollArea, QSlider, QSpinBox, QTextEdit, QToolBar, QVBoxLayout,
+                             QWidget)
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, APP_DIR)
@@ -28,6 +29,7 @@ ENGINE_ARGS = [os.path.join("engine", "ComfyUI", "main.py"),
 os.makedirs(DATA, exist_ok=True)
 
 from core import apimodels, cache, catalog, exporter, hwprobe, lrc, pipeline, prompt_tools
+from core.comfy_client import ComfyClient
 from core.comfy_ws import ProgressWatcher
 from ui.api_page import ApiPage
 from ui.canvas import CanvasView
@@ -58,8 +60,12 @@ QToolButton:pressed { background: #1f6fb5; }
 QDockWidget { color: #9a9a9a; titlebar-close-icon: none; titlebar-normal-icon: none; }
 QDockWidget::title { background: #252525; padding: 6px 8px; }
 QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox {
-    background: #1e1e1e; border: 1px solid #3f3f3f; border-radius: 3px;
+    background: transparent; border: 1px solid #3f3f3f; border-radius: 3px;
     padding: 4px; color: #d0d0d0; selection-background-color: #2d8ceb; }
+QLineEdit:focus, QTextEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus {
+    border-color: #2d8ceb; }
+QTextEdit { background: transparent; }
+QScrollArea, QScrollArea > QWidget > QWidget { background: transparent; border: none; }
 QSpinBox:disabled, QDoubleSpinBox:disabled {
     color: #5f5f5f; background: #242424; border-color: #333333; }
 QPushButton { background: #3a3a3a; border: 1px solid #4a4a4a; border-radius: 3px;
@@ -75,7 +81,10 @@ QPushButton#ghost { background: transparent; border: 1px solid #4a4a4a; color: #
     padding: 3px 10px; border-radius: 5px; font-size: 11px; }
 QPushButton#ghost:hover { background: #3a3a3a; color: #e6e6e6; }
 QPushButton#ghost:disabled { color: #5a5a5a; border-color: #3a3a3a; }
-QFrame#srcCard { background: #262626; border: 1px solid #3a3a3a; border-radius: 8px; }
+QFrame#srcCard { background: transparent; border: 1px solid #3a3a3a; border-radius: 8px; }
+QPushButton#collapse { background: transparent; border: none; color: #8a8a8a;
+    font-weight: bold; text-align: left; padding: 6px 0 2px 0; }
+QPushButton#collapse:hover { color: #d0d0d0; }
 QLabel#srcThumb { background: #1a1a1a; border-radius: 6px; }
 QLabel#srcName { color: #e2e2e2; font-weight: bold; }
 QLabel#srcMeta { color: #787878; font-size: 11px; }
@@ -83,7 +92,7 @@ QSlider::groove:horizontal { height: 3px; background: #1a1a1a; border-radius: 2p
 QSlider::sub-page:horizontal { background: #4a4a4a; border-radius: 2px; }
 QSlider::handle:horizontal { width: 11px; margin: -5px 0; border-radius: 5px; background: #a0a0a0; }
 QSlider::handle:horizontal:hover { background: #c8c8c8; }
-QListWidget { background: #252525; border: none; outline: none; }
+QListWidget { background: transparent; border: none; outline: none; }
 QListWidget::item { padding: 5px 6px; border-radius: 3px; }
 QListWidget::item:selected { background: #2d8ceb; color: #ffffff; }
 QCheckBox::indicator { width: 13px; height: 13px; }
@@ -298,18 +307,24 @@ class MainWindow(QMainWindow):
     def _build_dock(self):
         dock = QDockWidget("创作", self)
         dock.setFeatures(QDockWidget.DockWidgetMovable)
-        dock.setMinimumWidth(360)
+        dock.setMinimumWidth(370)
         self.addDockWidget(Qt.RightDockWidgetArea, dock)
 
         body = QWidget()
         lay = QVBoxLayout(body)
-        lay.setContentsMargins(10, 8, 10, 8)
+        lay.setContentsMargins(0, 0, 8, 0)
         lay.setSpacing(6)
 
-        lay.addWidget(self._section("模型"))
+        self.model_head = QPushButton("▸ 模型")
+        self.model_head.setObjectName("collapse")
+        self.model_head.setCheckable(True)
+        self.model_head.setToolTip("点开可以选择主模型、添加模型或接远程 API")
+        self.model_head.toggled.connect(self.on_model_toggle)
+        lay.addWidget(self.model_head)
         self.model_list = ModelList()
         self.model_list.addRequested.connect(self.open_model_page)
         self.model_list.modelSelected.connect(self.on_model_selected)
+        self.model_list.setVisible(False)
         lay.addWidget(self.model_list)
         lay.addSpacing(8)
 
@@ -364,9 +379,18 @@ class MainWindow(QMainWindow):
         form.addRow(self._tip("CFG", TIPS["cfg"]), self.cfg_spin)
         lay.addLayout(form)
 
+        lay.addStretch(1)
+
+        # 上半部分（模型/素材/文本/参数）比窗口高时滚动；生成与应用钉在底部，永远点得到
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(body)
+        self.panel_scroll = scroll
+
         self.estimate_label = QLabel("")
         self.estimate_label.setObjectName("est")
-        lay.addWidget(self.estimate_label)
         self.steps_spin.valueChanged.connect(self.on_steps_changed)
         self.on_steps_changed()
 
@@ -376,16 +400,21 @@ class MainWindow(QMainWindow):
         self.btn_gen.clicked.connect(self.on_generate)
         self.btn_gen.gearClicked.connect(self.open_preview_settings)
         self.btn_gen.gear.setToolTip("预览大小设置")
-        lay.addWidget(self.btn_gen)
 
         self.btn_apply = QPushButton("应用预览并生成正式图")
         self.btn_apply.setEnabled(False)
         self.btn_apply.setToolTip(TIPS["apply"])
         self.btn_apply.clicked.connect(self.on_apply)
-        lay.addWidget(self.btn_apply)
 
-        lay.addStretch(1)
-        dock.setWidget(body)
+        shell = QWidget()
+        outer = QVBoxLayout(shell)
+        outer.setContentsMargins(10, 8, 10, 8)
+        outer.setSpacing(6)
+        outer.addWidget(scroll, 1)
+        outer.addWidget(self.estimate_label)
+        outer.addWidget(self.btn_gen)
+        outer.addWidget(self.btn_apply)
+        dock.setWidget(shell)
 
     def _section(self, text):
         lab = QLabel(text)
@@ -412,8 +441,21 @@ class MainWindow(QMainWindow):
         elif self.model_id not in ids:
             self.model_id = ids[0]
         self.model_list.set_models(entries, self.model_id)
+        self._update_model_head(entries)
         if hasattr(self, "steps_spin"):
             self._sync_param_state()
+
+    def _update_model_head(self, entries=None):
+        """折叠时把当前模型写在标题上，展开时只留「▾ 模型」。"""
+        if entries is None:
+            entries = [{"id": self.model_id, "name": "未选择"}] if self.model_id else []
+        cur = next((e["name"] for e in entries if e.get("id") == self.model_id), "未选择")
+        opened = self.model_head.isChecked()
+        self.model_head.setText(("▾ 模型" if opened else "▸ 模型 · " + cur))
+
+    def on_model_toggle(self, opened):
+        self.model_list.setVisible(opened)
+        self._update_model_head()
 
     def on_model_selected(self, mid):
         if mid == "@api":
@@ -480,6 +522,12 @@ class MainWindow(QMainWindow):
         """手动或用例触发时拉起 ComfyUI；已起过就直接复用。"""
         if self._engine_proc and self._engine_proc.poll() is None:
             return True
+        try:  # 界面上还没刷新到「就绪」时也别重复拉第二个引擎
+            if ComfyClient().is_up():
+                self._engine_ok = True
+                return True
+        except Exception:
+            pass
         if not os.path.exists(ENGINE_PY):
             QMessageBox.warning(self, "启动失败",
                                 "找不到引擎的 Python：\n%s\n\n先运行 scripts/start-engine.ps1 完成首次安装。" % ENGINE_PY)
