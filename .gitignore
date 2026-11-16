@@ -1,0 +1,17 @@
+# 虚拟环境与依赖
+*/venv/
+app/venv/
+engine/venv/
+
+# 模型与数据（体积大，不入库）
+models/
+data/
+
+# Python 缓存
+__pycache__/
+*.pyc
+*.pyo
+
+# 系统垃圾
+.DS_Store
+Thumbs.db
