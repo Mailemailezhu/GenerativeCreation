@@ -1,13 +1,16 @@
-"""按 Adobe「导出为」的口径保存图像：JPEG / PNG / TIFF，各自带质量选项。
+"""按 Adobe「导出为」的口径保存图像：JPEG / PNG / TIFF / PSD，各自带选项。
 
 只写 8-bit：ComfyUI 内部就是 8-bit，源图也是 8-bit PNG；Pillow 又不支持
 RGB 16-bit TIFF（硬写只会得到 8 位数据戴上 16 位的帽子），所以不放这一档。
+PSD 走自带的 psd.py：合成图 + 图层栈，导出后能在 PS/Affinity 里单独关掉生成层。
 """
 import io
 
-FORMATS = ("JPEG", "PNG", "TIFF")
+from . import psd
 
-EXT = {"JPEG": ".jpg", "PNG": ".png", "TIFF": ".tif"}
+FORMATS = ("JPEG", "PNG", "TIFF", "PSD")
+
+EXT = {"JPEG": ".jpg", "PNG": ".png", "TIFF": ".tif", "PSD": ".psd"}
 
 
 def _jpeg_quality(v):
@@ -29,13 +32,19 @@ def encode(img, fmt, opts):
             opts.get("compression", "LZW"))
         kw = {"compression": comp} if comp else {}
         img.convert("RGB").save(buf, "TIFF", **kw)
+    elif fmt == "PSD":
+        raise ValueError("PSD 需要图层，请用 save()")
     else:
         raise ValueError("不支持的格式：" + str(fmt))
     return buf.getvalue()
 
 
-def save(img, path, fmt, opts):
-    """返回写入的字节数。"""
+def save(img, path, fmt, opts, stack=None):
+    """返回写入的字节数。stack 只在 PSD 用，是自下而上的 (名称, RGBA) 列表。"""
+    if fmt == "PSD":
+        if not stack:
+            raise ValueError("PSD 需要至少一个图层")
+        return psd.write(path, stack, img)
     data = encode(img, fmt, opts)
     with open(path, "wb") as f:
         f.write(data)

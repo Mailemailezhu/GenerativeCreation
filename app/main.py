@@ -1040,18 +1040,34 @@ class MainWindow(QMainWindow):
         else:
             QMessageBox.warning(self, "保存失败", "写入文件失败。")
 
+    def _psd_layers(self):
+        """PSD 图层栈：底是原始图，上面一层只保留蒙版内的生成内容。"""
+        if self._orig_pil is None or self._cur_pil is None:
+            if self._cur_pil is None:
+                return []
+            return [("合成", self._cur_pil.convert("RGBA"))]
+        gen = self._cur_pil.convert("RGBA")
+        alpha = self.canvas.mask_pil()
+        if alpha.size != gen.size:
+            alpha = alpha.resize(gen.size)
+        gen.putalpha(alpha)
+        return [("原始图", self._orig_pil.convert("RGBA")), ("生成内容", gen)]
+
     def export_as(self):
-        if self.canvas.image is None:
+        img = self._cur_pil or self._orig_pil
+        if img is None:
             QMessageBox.information(self, "提示", "还没有打开图像。")
             return
         base = self._src_orig or os.path.join(DATA, "export.png")
-        dlg = ExportDialog(self.canvas.image, os.path.dirname(base),
+        dlg = ExportDialog(img, os.path.dirname(base),
                            os.path.splitext(os.path.basename(base))[0], self)
+        dlg.layers = self._psd_layers()
+        dlg.refresh_note()
         if not dlg.exec_():
             return
         QApplication.setOverrideCursor(Qt.WaitCursor)
         try:
-            n = exporter.save(self.canvas.image, dlg.path, dlg.fmt(), dlg.opts())
+            n = exporter.save(img, dlg.path, dlg.fmt(), dlg.opts(), stack=dlg.layers_for())
         except Exception as e:
             QApplication.restoreOverrideCursor()
             QMessageBox.warning(self, "导出失败", str(e))

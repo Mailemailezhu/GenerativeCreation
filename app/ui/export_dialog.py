@@ -57,6 +57,7 @@ class ExportDialog(QDialog):
         self.folder = folder or os.getcwd()
         self.stem = stem or "未命名"
         self.path = ""
+        self.layers = []
         self._token = 0
         self._worker = None
         self.setWindowTitle("导出为")
@@ -127,6 +128,7 @@ class ExportDialog(QDialog):
         self.stack.addWidget(self._page_jpeg())
         self.stack.addWidget(self._page_png())
         self.stack.addWidget(self._page_tiff())
+        self.stack.addWidget(self._page_psd())
         lay.addWidget(self.stack)
 
         self.est = QLabel("预估大小 计算中…")
@@ -231,6 +233,30 @@ class ExportDialog(QDialog):
         lay.addStretch(1)
         return p
 
+    def _page_psd(self):
+        p = QWidget()
+        lay = QVBoxLayout(p)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(6)
+        lay.addWidget(self._h("图层"))
+        self.psd_note = QLabel("")
+        self.psd_note.setWordWrap(True)
+        lay.addWidget(self.psd_note)
+        note = QLabel("PSD 存的是合成图 + 图层，没有质量选项。生成内容那层带蒙版透明度，"
+                      "在 PS 里可以单独隐藏、改混合模式或调不透明度，原始图那层始终完好。")
+        note.setWordWrap(True)
+        note.setObjectName("est")
+        lay.addWidget(note)
+        lay.addStretch(1)
+        return p
+
+    def refresh_note(self):
+        names = "、".join("「%s」" % k for k, _ in self.layers) or "整张图"
+        self.psd_note.setText("%d 个图层：%s" % (len(self.layers), names))
+
+    def layers_for(self):
+        return self.layers if self.fmt() == "PSD" else None
+
     # ---------- 交互 ----------
     def _on_quality(self, v):
         words = {0: "最低", 3: "低", 6: "中", 8: "高", 10: "很高", 12: "最高"}
@@ -253,6 +279,8 @@ class ExportDialog(QDialog):
             return {"quality": self.q_slider.value(), "progressive": self.prog_chk.isChecked()}
         if f == "PNG":
             return {"compress_level": [0, 3, 6, 9][self.png_combo.currentIndex()]}
+        if f == "PSD":
+            return {}
         return {"compression": ["无", "LZW", "ZIP"][self.tif_combo.currentIndex()]}
 
     def _schedule(self):
@@ -261,6 +289,9 @@ class ExportDialog(QDialog):
 
     def _estimate(self, token):
         if token != self._token or self.img is None:
+            return
+        if self.fmt() == "PSD":
+            self.est.setText("预估大小 —（PSD 按图层写入）")
             return
         self.est.setText("预估大小 计算中…")
         self._worker = SizeWorker(self.img, self.fmt(), self.opts(), token)

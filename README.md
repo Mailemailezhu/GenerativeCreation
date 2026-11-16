@@ -161,9 +161,22 @@ LrC 15.1 的「编辑于 → 在外部编辑器中打开」格式下拉只有 TI
 | JPEG | 品质 0–12（8 以上走 4:4:4 采样）、渐进式 |
 | PNG | 压缩 无 / 低 / 中 / 高（无损，只影响写入时间与体积） |
 | TIFF | 压缩 无 / LZW / ZIP |
+| PSD | 无质量选项；写合成图 + 两个图层：「原始图」在底，「生成内容」按蒙版带透明度 |
 
 只写 8 位：源图本身是 8 位 PNG，ComfyUI 内部也是 8 位，补 16 位只是把字节数翻倍。
-对话框里的「预估大小」是真编码一次得到的精确值，不是经验公式。
+对话框里的「预估大小」是真编码一次得到的精确值，不是经验公式（PSD 例外，它是按图层写的，
+估算没意义，直接显示「—」）。
+
+### PSD 图层
+
+Pillow 写不了分层 PSD，`psd-tools` 只读，`pytoshop` 没有 Python 3.12 的轮子，所以
+`app/core/psd.py` 按 Adobe 文件格式规范手写了最小写入器：头部 → 颜色模式 → 图像资源 →
+图层信息 → 合成图，通道数据逐行 PackBits 压缩。图层名同时写 Pascal 串和 `luni`（UTF-16BE）
+块，中文名在 PS 里才不会变乱码。
+
+导出的 PSD 在 PS / Affinity 里是底部「原始图」（完全不透明）+ 顶部「生成内容」（Alpha 来自
+画布上的蒙版，含画笔软硬和不透明度）。PS 里关掉上层就是没做过创作的原始照片，改上层的不透明度
+或混合模式就等于调融合效果——不用重新生成。合成图（不看图层时的预览）与实际画面逐像素一致。
 
 ## 验证脚本
 
@@ -172,3 +185,7 @@ LrC 15.1 的「编辑于 → 在外部编辑器中打开」格式下拉只有 TI
 | `scripts/mock_api.py` | 本地假 OpenAI 接口（/models 与 /images/edits），密钥 `sk-mock` |
 | `scripts/test_api.py` | 探活、列表并入、run_api 全链路与蒙版外保真度 |
 | `scripts/test_stage.py` | 画笔/羽化/预览比例/模型选择离线自检 |
+| `scripts/test_psd.py` | 手写 PSD 写入器自检：两图层 + 头部字段 |
+| `scripts/test_export_psd.py` | 走 `exporter.save(..., fmt="PSD")`，再用 Pillow 读回比对合成图 |
+| `scripts/read_psd.py` | 用 psd-tools 读回（临时 venv：`uv venv data/_venv_psd && uv pip install --python data/_venv_psd/Scripts/python.exe psd-tools`）|
+| `scripts/read_psd_alpha.py` | 核对图层名（`unicode_escape`）与生成层的透明度范围 |
