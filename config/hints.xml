@@ -45,6 +45,7 @@
 右键移除</item>
     <item key="asset_hint">点击选择原始图像（也可以从 LrC 用「编辑于」直接打开）</item>
     <item key="axis">切换分割线方向：左右拖动 / 上下拖动</item>
+    <item key="reset">丢掉预览和正式图，回到刚打开的原始图像（蒙版一起清空）</item>
   </ui>
   <tools>
     <tool key="brush" name="画笔">画笔蒙版 (B)：涂出要重新生成的范围</tool>

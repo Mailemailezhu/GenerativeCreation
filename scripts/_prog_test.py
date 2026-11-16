@@ -9,11 +9,10 @@ from core.comfy_ws import ProgressWatcher
 from ui.worker import GenWorker
 
 ROOT = ROOTDIR
-img = os.path.join(ROOT, 'data', 'test_input.tif')
-mask = os.path.join(ROOT, 'data', '_prog_mask.png')
-m = Image.new('L', (1200, 800), 0)
-ImageDraw.Draw(m).ellipse((700, 180, 1120, 640), fill=255)
-m.save(mask)
+from core import cache  # noqa: E402
+img, _msg = cache.load(os.path.join(ROOT, 'data', 'test_input.tif'))
+mask = Image.new('L', img.size, 0)
+ImageDraw.Draw(mask).ellipse((700, 180, 1120, 640), fill=255)
 out = os.path.join(ROOT, 'data', '_prog_draft.png')
 
 app = QApplication(sys.argv)
@@ -29,7 +28,7 @@ for _ in range(40):
     app.processEvents()
     time.sleep(0.02)
 
-g = GenWorker(pipeline.run, image_path=img, mask_path=mask, prompt='a flock of glowing cyan paper airplanes',
+g = GenWorker(pipeline.run, image=img, mask=mask, prompt='a flock of glowing cyan paper airplanes',
               out_path=out, stage='draft')
 g.progress.connect(lambda p, s: print('CB %3d%% %s' % (p, s)))
 g.failed.connect(lambda e: (print('FAIL', e), app.quit()))

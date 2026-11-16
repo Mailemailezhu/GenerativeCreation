@@ -1,12 +1,11 @@
 """GC：本地 AI 图像创作工作台。"""
 import os
+import shutil
 import subprocess
 import sys
 
 import bootstrap  # 先定缩放再碰 PyQt5：Qt 加载时就读 QT_SCALE_FACTOR
 
-import numpy as np
-from PIL import Image
 from PyQt5.QtCore import QSize, Qt, QTimer
 from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import (QAction, QActionGroup, QApplication, QCheckBox, QComboBox,
@@ -207,10 +206,14 @@ class MainWindow(QMainWindow):
         cv.addWidget(self.opts)
         cv.addWidget(self.canvas, 1)
         self.setCentralWidget(central)
-        # LrC 传进来的是导出副本路径，和实际打开的 PNG 分开记
+        # LrC 传进来的是导出副本路径，解码后的像素和它分开记
         self._lrc_source = None
-        self._source_png = None
-        self._draft_path = None
+        self._src_orig = None
+        # 原图、当前图、预览图都只在内存里，不落任何中间文件
+        self._orig_pil = None
+        self._cur_pil = None
+        self._draft_pil = None
+        self._clean_tmp()
         self._busy = False
         self._engine_ok = False
         self._engine_proc = None
@@ -218,7 +221,6 @@ class MainWindow(QMainWindow):
         self._worker = None
         # 预览档按原图长边等比缩放的百分比，0.10 就是 10%
         self.preview_ratio = 0.10
-        self._src_orig = None
         self.model_id = None
         self.watcher = ProgressWatcher()
         self.watcher.progress.connect(self.on_progress)
@@ -581,6 +583,12 @@ class MainWindow(QMainWindow):
         self.btn_apply.setToolTip(TIPS["apply"])
         self.btn_apply.clicked.connect(self.on_apply)
 
+        self.btn_reset = QPushButton("复位图像")
+        self.btn_reset.setMinimumHeight(26)
+        self.btn_reset.setEnabled(False)
+        self.btn_reset.setToolTip(UI["reset"])
+        self.btn_reset.clicked.connect(self.on_reset)
+
         shell = QWidget()
         outer = QVBoxLayout(shell)
         outer.setContentsMargins(10, 8, 10, 14)
@@ -589,6 +597,7 @@ class MainWindow(QMainWindow):
         outer.addWidget(self.estimate_label)
         outer.addWidget(self.btn_gen)
         outer.addWidget(self.btn_apply)
+        outer.addWidget(self.btn_reset)
         dock.setWidget(shell)
         title = QLabel("创作")
         title.setObjectName("dockTitle")
@@ -746,7 +755,7 @@ class MainWindow(QMainWindow):
         self.pb.hide()
         self.pb_label.hide()
         self.btn_gen.setEnabled(True)
-        self.btn_apply.setEnabled(bool(self._draft_path))
+        self.btn_apply.setEnabled(self._draft_pil is not None)
         self.statusBar().showMessage("引擎启动失败，详见 data/engine.log")
         QMessageBox.warning(self, "引擎启动失败",
                             "端口 8188 在 3 分钟内没有起来。\n日志：data/engine.log"
@@ -854,6 +863,14 @@ class MainWindow(QMainWindow):
         self.act_tol.setVisible(key in ("wand", "quick"))
         self.act_sel.setVisible(key in ("brush", "eraser", "rect", "wand", "quick"))
         self.act_zoom.setVisible(key == "zoom")
+        # 选区工具默认打开蒙版并切回原图，否则看不见自己在选哪里
+        if key in ("brush", "eraser", "rect", "wand", "quick"):
+            if not self.show_mask_cb.isChecked():
+                self.show_mask_cb.setChecked(True)
+            self.canvas.set_mask_visible(True)
+            if self.canvas.has_result() and self.canvas.view_mode != "edit":
+                self.canvas.set_view_mode("edit")
+                self._sync_view_buttons("edit")
 
     def on_brush_size(self, v):
         self.canvas.brush_size = v
@@ -953,23 +970,54 @@ class MainWindow(QMainWindow):
 
     def on_preview_ratio(self, r):
         self.preview_ratio = r
-        self.btn_gen.setText("重新生成预览图" if self._draft_path else "生成预览图")
+        self.btn_gen.setText("重新生成预览图" if self._draft_pil else "生成预览图")
         self.statusBar().showMessage(
             "预览大小 %.0f%%：送模型的 crop 长边约 %d px" % (r * 100, self._draft_side()), 5000)
 
     def _load_source(self, path, note=""):
-        """TIFF/PSD 之类先转成无压缩 PNG 缓存再进画布，画布只认 8 位 RGB。"""
-        png, msg = cache.ensure(path, os.path.join(DATA, "cache"))
-        if not png or not self.canvas.load_image(png):
+        """TIFF/PSD 之类在这里解成 8 位 RGB 留在内存，画布只认 8 位 RGB。"""
+        img, msg = cache.load(path)
+        if img is None or not self.canvas.load_image(img):
             return False
-        self._source_png = png
+        self._orig_pil = img
+        self._cur_pil = img
         self._src_orig = path
+        self.btn_reset.setEnabled(True)
         self.setWindowTitle("GC — %s" % os.path.basename(path))
-        self.src_card.set_image(png, self.canvas.image.width(), self.canvas.image.height(),
-                                 label=os.path.basename(path))
+        self.src_card.set_image(img, img.width, img.height, label=self._src_label())
         self._reset_buttons()
         self.statusBar().showMessage(note or msg, 8000)
         return True
+
+    def _src_label(self):
+        return os.path.basename(self._src_orig) if self._src_orig else "原始图"
+
+    def _clean_tmp(self):
+        """旧版本往 data 下写过蒙版、预览图和缓存 PNG，启动时顺手清掉。"""
+        for name in ("_gc_mask.png", "_gc_preview.png"):
+            p = os.path.join(DATA, name)
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except OSError:
+                    pass
+        for name in ("_gc_tmp", "cache"):
+            shutil.rmtree(os.path.join(DATA, name), ignore_errors=True)
+
+    def on_reset(self):
+        """丢掉预览和正式图，回到刚打开的原始图像，蒙版一起清空。"""
+        if self._orig_pil is None:
+            return
+        self._cur_pil = self._orig_pil
+        self.canvas.clear_result()
+        self.canvas.load_image(self._orig_pil)
+        self.src_card.set_image(self._orig_pil, self._orig_pil.width,
+                                 self._orig_pil.height, label=self._src_label())
+        self.setWindowTitle("GC — %s" % self._src_label())
+        self._reset_buttons()
+        self.rail.set_view_enabled(False)
+        self._sync_view_buttons("edit")
+        self.statusBar().showMessage("已复位到原始图像", 5000)
 
     def open_image(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -1012,7 +1060,7 @@ class MainWindow(QMainWindow):
         if self.canvas.image is None:
             QMessageBox.information(self, "提示", "还没有打开图像。")
             return
-        base = self._src_orig or self._source_png or os.path.join(DATA, "export.png")
+        base = self._src_orig or os.path.join(DATA, "export.png")
         dlg = ExportDialog(self.canvas.image, os.path.dirname(base),
                            os.path.splitext(os.path.basename(base))[0], self)
         if not dlg.exec_():
@@ -1027,20 +1075,10 @@ class MainWindow(QMainWindow):
         QApplication.restoreOverrideCursor()
         self.statusBar().showMessage("已导出 %s（%s）" % (dlg.path, exporter.human(n)), 8000)
 
-    def _save_mask(self):
-        """把画布上的蒙版落成灰度 PNG：Alpha8 的单通道就是蒙版值。"""
-        a = self.canvas.mask_alpha()
-        w, h = a.width(), a.height()
-        buf = a.constBits().asstring(a.byteCount())
-        arr = np.frombuffer(buf, np.uint8).reshape(h, a.bytesPerLine())[:, :w]
-        path = os.path.join(DATA, "_gc_mask.png")
-        Image.fromarray(arr.copy(), "L").save(path)
-        return path
-
     def on_generate(self):
         if self._busy:
             return
-        if self.canvas.image is None or not self._source_png:
+        if self.canvas.image is None or self._cur_pil is None:
             QMessageBox.information(self, "提示", "请先打开一张图像。")
             return
         if self.canvas.mask_bounds() is None:
@@ -1050,30 +1088,20 @@ class MainWindow(QMainWindow):
         if not prompt:
             QMessageBox.information(self, "提示", "请先写提示词。")
             return
-        self.ensure_engine(self._gen_kw(
-            prompt=prompt,
-            out_path=os.path.join(DATA, "_gc_preview.png"),
-            stage="draft",
-        ), "预览")
+        self.ensure_engine(self._gen_kw(prompt=prompt, stage="draft"), "预览")
 
     def on_apply(self):
-        if self._busy or not self._draft_path:
+        if self._busy or self._draft_pil is None:
             return
-        base = self._src_orig or os.path.join(DATA, "result.png")
-        out = os.path.splitext(base)[0] + "-AI.png"
         self.ensure_engine(self._gen_kw(
-            prompt=self.prompt_edit.toPlainText().strip(),
-            out_path=out,
-            stage="final",
-        ), "正式图")
+            prompt=self.prompt_edit.toPlainText().strip(), stage="final"), "正式图")
 
-    def _gen_kw(self, prompt, out_path, stage):
+    def _gen_kw(self, prompt, stage):
         """本地档和 API 档参数不同，在这里统一组装，避免两处各写一份。"""
         kw = dict(
-            image_path=self._source_png,
-            mask_path=self._save_mask(),
+            image=self._cur_pil,
+            mask=self.canvas.mask_pil(),
             prompt=prompt,
-            out_path=out_path,
             stage=stage,
             feather=self.feather_spin.value() or None,
         )
@@ -1093,8 +1121,8 @@ class MainWindow(QMainWindow):
                 draft_side=self._draft_side(),
                 unet=self._unet(),
             )
-            if stage == "final" and self._draft_path:
-                kw["draft_path"] = self._draft_path
+            if stage == "final" and self._draft_pil is not None:
+                kw["draft"] = self._draft_pil
         return kw
 
     def _start(self, kw, label):
@@ -1131,26 +1159,29 @@ class MainWindow(QMainWindow):
         QTimer.singleShot(3000, self.pb.hide)
         QTimer.singleShot(3000, self.pb_label.hide)
         self.btn_gen.setEnabled(True)
-        out = info.get("out")
+        img = info.get("image")
+        if img is None:
+            self.on_gen_failed("管线没有返回图像")
+            return
         if info.get("stage") == "draft":
-            self._draft_path = out
+            self._draft_pil = img
             self.btn_gen.setText("重新生成预览图")
             self.btn_gen.set_look(False)
             self.btn_apply.setEnabled(True)
             self._repolish(self.btn_apply, "primary")
             # 出图后不弹新窗口，直接在画布上做原图/预览对照（同 LrC 参考视图）
-            if self.canvas.set_result(out):
+            if self.canvas.set_result(img):
                 self.rail.set_view_enabled(True)
                 self._sync_view_buttons("split")
             self.statusBar().showMessage("预览完成：拖动中间的分割线对比，满意后点应用", 10000)
         else:
             # 正式图回填画布，导出和下一轮创作都基于它
-            self.canvas.load_image(out)
-            self._source_png = out
-            self.src_card.set_image(out, self.canvas.image.width(), self.canvas.image.height())
-            self.setWindowTitle("GC — %s" % os.path.basename(out))
+            self._cur_pil = img
+            self.canvas.load_image(img)
+            self.src_card.set_image(img, img.width, img.height, label=self._src_label())
+            self.setWindowTitle("GC — %s" % self._src_label())
             self._reset_buttons()
-            self.statusBar().showMessage("正式图已保存：%s" % out, 10000)
+            self.statusBar().showMessage("正式图已就绪：可以导出，或在蒙版上继续创作", 10000)
 
     def on_gen_failed(self, msg):
         self._busy = False
@@ -1159,7 +1190,7 @@ class MainWindow(QMainWindow):
         self.pb.hide()
         self.pb_label.hide()
         self.btn_gen.setEnabled(True)
-        self.btn_apply.setEnabled(bool(self._draft_path))
+        self.btn_apply.setEnabled(self._draft_pil is not None)
         QMessageBox.warning(self, "生成失败", msg)
 
     def _repolish(self, w, name):
@@ -1168,7 +1199,7 @@ class MainWindow(QMainWindow):
         w.style().polish(w)
 
     def _reset_buttons(self):
-        self._draft_path = None
+        self._draft_pil = None
         self.btn_gen.setText("生成预览图")
         self.btn_gen.set_look(True)
         self.btn_gen.setEnabled(True)

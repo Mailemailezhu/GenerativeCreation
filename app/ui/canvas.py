@@ -8,6 +8,19 @@ from PyQt5.QtWidgets import QGraphicsItem, QGraphicsScene, QGraphicsView
 
 BRUSH_COLOR = QColor(255, 64, 64)
 MASK_OPACITY = 0.55
+
+
+def _to_qimage(src):
+    """路径 / QImage / PIL.Image 都收，统一成 QImage。"""
+    if isinstance(src, QImage):
+        return src
+    if isinstance(src, Image.Image):
+        rgb = src.convert("RGB")
+        data = rgb.tobytes("raw", "RGB")
+        img = QImage(data, rgb.width, rgb.height, rgb.width * 3,
+                     QImage.Format_RGB888)
+        return img.copy()
+    return QImage(src)
 MAX_UNDO = 20
 SPLIT_HIT = 7          # 屏幕上离分割线几像素算抓住它
 
@@ -126,12 +139,12 @@ class CanvasView(QGraphicsView):
         self.split_axis = "v"     # v = 竖线左右拖，h = 横线上下拖
 
     # ---------- 图像 ----------
-    def load_image(self, path):
-        img = QImage(path)
+    def load_image(self, src):
+        img = _to_qimage(src)
         if img.isNull():
             return False
         self.image = img.convertToFormat(QImage.Format_ARGB32)
-        self.file_path = path
+        self.file_path = src if isinstance(src, str) else None
         self._arr = None
         self.result_img = None
         self.view_mode = "edit"
@@ -208,11 +221,14 @@ class CanvasView(QGraphicsView):
         self.zoomChanged.emit(self.zoom)
 
     # ---------- 原图 / 结果对比 ----------
-    def set_result(self, path):
-        """贴一张结果图到画布顶部，切到对比视图（对齐 LrC 的参考视图）。"""
+    def set_result(self, src):
+        """贴一张结果图到画布顶部，切到对比视图（对齐 LrC 的参考视图）。
+
+        src 可以是路径、QImage 或内存里的 PIL 图。
+        """
         if self.image is None:
             return False
-        img = QImage(path)
+        img = _to_qimage(src)
         if img.isNull():
             return False
         if img.size() != self.image.size():
@@ -393,6 +409,12 @@ class CanvasView(QGraphicsView):
         if self.mask is None:
             return None
         return self.mask.convertToFormat(QImage.Format_Alpha8)
+
+    def mask_pil(self):
+        """蒙版转成灰度 PIL 图，直接喂给管线，不用先写文件。"""
+        if self.mask is None:
+            return None
+        return Image.fromarray(self._alpha_of(self.mask), "L")
 
     def mask_bounds(self):
         """蒙版非空区域的外接矩形（原图坐标），缩小 1/8 扫描以避免长时间等待。"""

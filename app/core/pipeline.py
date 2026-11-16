@@ -4,6 +4,7 @@
 定稿档（crop 长边 2048）把已认可的草稿当风格参考一起送模型，在原生分辨率上重绘。
 
 两档都只把蒙版内的像素贴回原图，蒙版外保持原像素。
+中间产物（裁剪图、蒙版、素材拼图）都在内存里编码成 PNG 上传，不落盘。
 """
 import io
 import json
@@ -58,61 +59,75 @@ def build_workflow(crop_size, prompt, img_name, mask_name, steps=4, cfg=1.0, see
     return wf
 
 
-def prepare(image_path, mask_path, stage="draft", pad=180, min_side=512,
-            max_side=None):
-    img = Image.open(image_path).convert("RGB")
-    mask = Image.open(mask_path).convert("L")
-    if mask.size != img.size:
-        mask = mask.resize(img.size, Image.LANCZOS)
-    bbox = ops.mask_bbox(np.asarray(mask))
+def _as_image(src, mode):
+    """PIL 直接用，路径才打开；返回的图像与文件句柄无关。"""
+    if isinstance(src, Image.Image):
+        return src if src.mode == mode else src.convert(mode)
+    with Image.open(src) as im:
+        return im.convert(mode)
+
+
+def prepare(image, mask, stage="draft", pad=180, min_side=512, max_side=None):
+    img = _as_image(image, "RGB")
+    m = _as_image(mask, "L")
+    if m.size != img.size:
+        m = m.resize(img.size, Image.LANCZOS)
+    bbox = ops.mask_bbox(np.asarray(m))
     if bbox is None:
         raise ValueError("蒙版为空")
     if max_side is None:
         max_side = DRAFT_SIDE if stage == "draft" else FINAL_SIDE
     geo = ops.plan_crop(img.width, img.height, bbox, pad=pad, max_side=max_side,
                         min_side=min_side)
-    return img, mask, geo
+    return img, m, geo
 
 
-def run(image_path, mask_path, prompt, out_path, stage="draft", draft_path=None,
+def _png_bytes(pil_img):
+    buf = io.BytesIO()
+    pil_img.save(buf, "PNG")
+    return buf.getvalue()
+
+
+def run(image, mask, prompt, out_path=None, stage="draft", draft=None,
         asset_paths=(), preview_composite=True, host="127.0.0.1", port=8188,
         steps=4, cfg=1.0, seed=None, feather=None, color_match=True, timeout=900,
         progress=None, draft_side=None, unet=None, denoise=1.0):
-    """跑一档，把结果写到 out_path。
+    """跑一档，结果以 PIL 图放在返回值的 image 里。
 
     stage="draft" 时可以 preview_composite=False，只拿 crop 小图不贴回。
-    stage="final" 必须给 draft_path —— 没有已认可的草稿就没有定稿的意义。
+    stage="final" 必须给 draft —— 没有已认可的草稿就没有定稿的意义。
+    out_path 只给命令行脚本留的口子，界面调用不传，结果不落盘。
     """
     if stage not in ("draft", "final"):
-        raise ValueError(f"未知档位: {stage}")
-    if stage == "final" and not draft_path:
+        raise ValueError("未知档位: %s" % stage)
+    if stage == "final" and draft is None:
         raise ValueError("定稿档需要草稿图作为风格参考")
 
     _tick(progress, 2, "准备选区")
-    img, mask, geo = prepare(image_path, mask_path, stage=stage,
-                             max_side=draft_side if stage == "draft" else None)
+    img, m, geo = prepare(image, mask, stage=stage,
+                          max_side=draft_side if stage == "draft" else None)
     crop, size = geo["crop"], geo["size"]
     crop_img = ops.crop_image(img, crop, size)
-    crop_mask = ops.crop_mask(mask, crop, size)
+    crop_mask = ops.crop_mask(m, crop, size)
 
     _tick(progress, 6, "连接引擎")
     client = ComfyClient(host=host, port=port)
     if not client.is_up():
-        raise ComfyError(f"引擎未启动: {host}:{port}")
+        raise ComfyError("引擎未启动: %s:%s" % (host, port))
 
-    tmp = Path(out_path).parent / "_gc_tmp"
-    tmp.mkdir(parents=True, exist_ok=True)
     _tick(progress, 10, "上传裁剪图")
-    img_name = client.upload_image(_save(crop_img, tmp / "crop.png"))
-    mask_name = client.upload_image(_save(crop_mask, tmp / "mask.png"))
-    draft_name = client.upload_image(draft_path) if draft_path else None
+    img_name = client.upload_image(_png_bytes(crop_img), "gc_crop.png")
+    mask_name = client.upload_image(_png_bytes(crop_mask.convert("L")), "gc_mask.png")
+    draft_name = None
+    if draft is not None:
+        draft_name = client.upload_image(_png_bytes(_as_image(draft, "RGB")), "gc_draft.png")
     asset_name = None
     if len(asset_paths) == 1:
         asset_name = client.upload_image(asset_paths[0])
     elif asset_paths:
         # 模型只有三个参考图槽位，多张素材只能拼成一张再送，顺序写进提示词
         sheet, _cols, _rows = assets.tile(asset_paths)
-        asset_name = client.upload_image(_save(sheet, tmp / "assets.png"))
+        asset_name = client.upload_image(_png_bytes(sheet), "gc_assets.png")
         prompt = prompt + assets.describe(asset_paths)
 
     if seed is None:
@@ -132,19 +147,21 @@ def run(image_path, mask_path, prompt, out_path, stage="draft", draft_path=None,
 
     info = {"stage": stage, "seed": seed, "crop": crop, "size": size}
     if stage == "draft" and not preview_composite:
-        _save(gen, out_path)
-        return {**info, "composited": False, "out": str(out_path)}
+        if out_path:
+            gen.save(out_path)
+        return {**info, "image": gen, "composited": False}
 
     if feather is None:
-        feather = ops.auto_feather(ops.mask_bbox(np.asarray(mask)))
+        feather = ops.auto_feather(ops.mask_bbox(np.asarray(m)))
     # 色彩对齐必须在 crop 上做：蒙版外统计用的是原图 crop，贴回后蒙版外是逐位原像素
     if color_match:
         gen = ops.match_color(gen, crop_img, crop_mask)
     _tick(progress, 92, "贴回原图")
     result = ops.composite_back(img, gen, crop_mask, crop, feather=feather)
-    _tick(progress, 97, "保存")
-    _save(result, out_path)
-    return {**info, "composited": True, "feather": feather, "out": str(out_path)}
+    _tick(progress, 97, "完成")
+    if out_path:
+        result.save(out_path)
+    return {**info, "image": result, "composited": True, "feather": feather}
 
 
 def _tick(progress, pct, msg):
@@ -152,20 +169,15 @@ def _tick(progress, pct, msg):
         progress(pct, msg)
 
 
-def _save(pil_img, path):
-    pil_img.save(path)
-    return str(path)
-
-
-def run_api(image_path, mask_path, prompt, out_path, api, stage="draft", draft_side=None,
+def run_api(image, mask, prompt, api, out_path=None, stage="draft", draft_side=None,
             feather=None, preview_composite=True, progress=None, timeout=600):
     """走远程 /images/edits：贴回逻辑和本地档完全一样，只是采样在别人机器上跑。"""
     _tick(progress, 2, "准备选区")
-    img, mask, geo = prepare(image_path, mask_path, stage=stage,
-                             max_side=draft_side if stage == "draft" else None)
+    img, m, geo = prepare(image, mask, stage=stage,
+                          max_side=draft_side if stage == "draft" else None)
     crop, size = geo["crop"], geo["size"]
     crop_img = ops.crop_image(img, crop, size)
-    crop_mask = ops.crop_mask(mask, crop, size)
+    crop_mask = ops.crop_mask(m, crop, size)
 
     _tick(progress, 10, "对齐接口尺寸")
     api_size = apimodels.pick_size(size[0], size[1])
@@ -190,15 +202,16 @@ def run_api(image_path, mask_path, prompt, out_path, api, stage="draft", draft_s
 
     info = {"stage": stage, "api": api.get("name"), "size": used, "crop": crop}
     if stage == "draft" and not preview_composite:
-        _save(gen, out_path)
-        return {**info, "composited": False, "out": str(out_path)}
+        if out_path:
+            gen.save(out_path)
+        return {**info, "image": gen, "composited": False}
 
     if feather is None:
-        feather = ops.auto_feather(ops.mask_bbox(np.asarray(mask)))
+        feather = ops.auto_feather(ops.mask_bbox(np.asarray(m)))
     gen = ops.match_color(gen, crop_img, crop_mask)
     _tick(progress, 92, "贴回原图")
     result = ops.composite_back(img, gen, crop_mask, crop, feather=feather)
-    _tick(progress, 97, "保存")
-    _save(result, out_path)
-    return {**info, "composited": True, "feather": feather, "out": str(out_path)}
-
+    _tick(progress, 97, "完成")
+    if out_path:
+        result.save(out_path)
+    return {**info, "image": result, "composited": True, "feather": feather}

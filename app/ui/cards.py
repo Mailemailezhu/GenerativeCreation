@@ -2,7 +2,9 @@
 import os
 
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
+from PIL import Image
+from PyQt5.QtGui import (QColor, QImage, QPainter, QPainterPath, QPen,
+                         QPixmap)
 from PyQt5.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLabel, QSizePolicy,
                              QVBoxLayout, QWidget)
 
@@ -15,8 +17,20 @@ UI = _load_hints()["ui"]
 THUMB = 76
 
 
-def _cover(path, size):
-    pix = QPixmap(path)
+def _pixmap(src):
+    """路径 / QPixmap / PIL.Image 都收。"""
+    if isinstance(src, QPixmap):
+        return src
+    if isinstance(src, Image.Image):
+        rgb = src.convert("RGB")
+        img = QImage(rgb.tobytes("raw", "RGB"), rgb.width, rgb.height,
+                     rgb.width * 3, QImage.Format_RGB888)
+        return QPixmap.fromImage(img.copy())
+    return QPixmap(src)
+
+
+def _cover(src, size):
+    pix = _pixmap(src)
     if pix.isNull():
         return pix
     return pix.scaled(size, size, Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
@@ -223,8 +237,13 @@ class SourceCard(QFrame):
             self.clicked.emit()
         super().mouseReleaseEvent(event)
 
-    def set_image(self, path, width=None, height=None, label=None):
-        self.thumb.setPixmap(_cover(path, 76))
-        # label 用来显示 LrC 那边的原文件名，path 可能是缓存 PNG
-        self.name.setText(label or os.path.basename(path))
+    def set_image(self, src, width=None, height=None, label=None):
+        self.thumb.setPixmap(_cover(src, 76))
+        # label 用来显示 LrC 那边的原文件名；内存图没有文件名，退回默认文案
+        if label:
+            self.name.setText(label)
+        elif isinstance(src, str):
+            self.name.setText(os.path.basename(src))
+        else:
+            self.name.setText("原始图")
         self.meta.setText("%d × %d px" % (width, height) if width else "")

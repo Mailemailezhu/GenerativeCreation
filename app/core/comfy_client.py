@@ -50,11 +50,18 @@ class ComfyClient:
     def stats(self):
         return json.loads(self._get("/system_stats"))
 
-    def upload_image(self, path):
-        """上传本地图片到引擎 input 目录，返回引擎内文件名。"""
-        name = os.path.basename(path)
-        with open(path, "rb") as f:
-            raw = f.read()
+    def upload_image(self, src, name=None):
+        """上传图片到引擎 input 目录，返回引擎内文件名。
+
+        src 可以是本地路径，也可以是内存里的 PNG 字节（管线不落中间文件）。
+        """
+        if isinstance(src, (bytes, bytearray)):
+            raw = bytes(src)
+            name = name or "gc_image.png"
+        else:
+            name = name or os.path.basename(src)
+            with open(src, "rb") as f:
+                raw = f.read()
         boundary = "----GCBoundary7MA4YWxkTrZu0gW"
         ctype = mimetypes.guess_type(name)[0] or "image/png"
         body = b"\r\n".join([
