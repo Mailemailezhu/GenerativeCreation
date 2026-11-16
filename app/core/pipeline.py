@@ -23,7 +23,8 @@ FINAL_SIDE = 2048
 
 
 def build_workflow(crop_size, prompt, img_name, mask_name, steps=4, cfg=1.0, seed=0,
-                   draft_name=None, asset_name=None, unet=None, denoise=1.0):
+                   draft_name=None, asset_name=None, unet=None, denoise=1.0,
+                   lock_name=None, lock_denoise=0.55):
     """按档位裁掉不用的参考图节点。
 
     没接上的 LoadImage 会让整个 prompt 校验失败，所以未使用的节点要真的删掉，
@@ -55,6 +56,15 @@ def build_workflow(crop_size, prompt, img_name, mask_name, steps=4, cfg=1.0, see
         wf.pop("18", None)
         for n in ("11", "12"):
             wf[n]["inputs"].pop("image3", None)
+
+    if lock_name:
+        # 锁构图：初始 latent 换成"放大后的草稿"而不是原图，模型只细化、不重新构图
+        wf["19"] = {"class_type": "LoadImage", "inputs": {"image": lock_name}}
+        wf["20"] = {"class_type": "ImageScale",
+                    "inputs": {"image": ["19", 0], "upscale_method": "lanczos",
+                               "width": w, "height": h, "crop": "disabled"}}
+        wf["9"]["inputs"]["pixels"] = ["20", 0]
+        wf["13"]["inputs"]["denoise"] = lock_denoise
 
     return wf
 
@@ -91,7 +101,7 @@ def _png_bytes(pil_img):
 def run(image, mask, prompt, out_path=None, stage="draft", draft=None,
         asset_paths=(), preview_composite=True, host="127.0.0.1", port=8188,
         steps=4, cfg=1.0, seed=None, feather=None, color_match=True, timeout=900,
-        progress=None, draft_side=None, unet=None, denoise=1.0):
+        progress=None, draft_side=None, unet=None, denoise=1.0, lock=0.0):
     """跑一档，结果以 PIL 图放在返回值的 image 里。
 
     stage="draft" 时可以 preview_composite=False，只拿 crop 小图不贴回。
@@ -121,6 +131,19 @@ def run(image, mask, prompt, out_path=None, stage="draft", draft=None,
     draft_name = None
     if draft is not None:
         draft_name = client.upload_image(_png_bytes(_as_image(draft, "RGB")), "gc_draft.png")
+    # 锁构图：草稿是整张画布，按比例裁出同一块再放大到 crop 尺寸，作为初始 latent
+    lock_name = None
+    if lock > 0 and draft is not None:
+        draft_img = _as_image(draft, "RGB")
+        kx = draft_img.width / float(img.width)
+        ky = draft_img.height / float(img.height)
+        box = (int(round(crop[0] * kx)), int(round(crop[1] * ky)),
+               int(round(crop[2] * kx)), int(round(crop[3] * ky)))
+        seed_crop = draft_img.crop(box)
+        if seed_crop.size != size:
+            seed_crop = seed_crop.resize(size, Image.LANCZOS)
+        lock_name = client.upload_image(_png_bytes(seed_crop), "gc_lock.png")
+
     asset_name = None
     if len(asset_paths) == 1:
         asset_name = client.upload_image(asset_paths[0])
@@ -137,7 +160,8 @@ def run(image, mask, prompt, out_path=None, stage="draft", draft=None,
     # 融合强度只对定稿档有意义：草稿是全重画，再压低 denoise 就看不到新内容
     wf = build_workflow(size, prompt, img_name, mask_name, steps=steps, cfg=cfg,
                         seed=seed, draft_name=draft_name, asset_name=asset_name,
-                        unet=unet, denoise=denoise if stage == "final" else 1.0)
+                        unet=unet, denoise=denoise if stage == "final" else 1.0,
+                        lock_name=lock_name, lock_denoise=lock)
     _tick(progress, 19, "提交任务")
     pid = client.queue_prompt(wf)
     entry = client.wait_for(pid, timeout=timeout)

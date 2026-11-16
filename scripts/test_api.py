@@ -35,14 +35,17 @@ print("CUR", w.model_list.current_id(), w.model_id)
 print("API_ITEM", bool(w._api_item()), w._api_item().get("model"))
 print("UNET_NONE", w._unet())
 
-info = pipeline.run_api("data/test_input.png", "data/test_mask.png",
-                        "一队发光的纸飞机", "data/out_api.png", item, stage="draft",
+base_img = Image.open("data/test_input.png").convert("RGB")
+mask_img = Image.open("data/test_mask.png").convert("L")
+info = pipeline.run_api(base_img, mask_img, "一队发光的纸飞机", item, stage="draft",
                         draft_side=512, progress=lambda p, m: None)
+out_img = info["image"]
+out_img.save("data/out_api.png")
 print("RUN_API", json.dumps({k: str(v) for k, v in info.items()}, ensure_ascii=False))
 
-base = Image.open("data/test_input.png").convert("RGB")
-out = Image.open("data/out_api.png").convert("RGB")
-mask = Image.open("data/test_mask.png").convert("L")
+base = base_img
+out = out_img
+mask = mask_img
 a, b = np.asarray(base).astype(int), np.asarray(out).astype(int)
 m = np.asarray(mask)
 dev = np.abs(a - b).max(axis=2)

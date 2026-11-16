@@ -161,31 +161,6 @@ def _grow(slider, minimum=80):
 TOOL_KEYS = {"brush": "B", "eraser": "E", "rect": "M", "wand": "W",
              "quick": "Q", "hand": "H", "zoom": "Z"}
 
-TIPS = {
-    "steps": ("采样步数：模型去噪迭代多少次。\n"
-              "本机实测每步约 5 秒（RTX 5070 12GB + Q5 模型）。\n"
-              "预览档 4 步约 20 秒采样；调到 8 步约 40 秒，画质提升有限。\n"
-              "步数翻倍时间就翻倍，和显存无关。"),
-    "cfg": ("CFG = 提示词引导强度（Classifier-Free Guidance）。\n"
-            "数值越高越死板地贴提示词、色彩更硬；越低越自由。\n"
-            "本工作流挂了 4 步加速 LoRA，CFG 必须保持 1.0，调高会过曝、发糊甚至崩图。"),
-    "gen": ("先用低分辨率出一张预览：选区裁切后长边 512，约 20 秒。\n"
-            "只看构图和效果，不代表最终画质；重新生成会覆盖上一张。"),
-    "apply": ("把这张预览当作风格参考，用 原图 + 预览 + 素材图 三张参考重绘正式图。\n"
-              "选区裁切后长边 2048，耗时约为预览的 4 到 5 倍。\n"
-              "必须先有一张预览。"),
-    "denoise": ("融合强度 = 正式图重绘时保留原图的程度（denoise）。\n"
-                  "1.0 = 蒙版内完全重画，最像模型原图，但风格容易和周围不同；\n"
-                  "0.6~0.8 会保留原片的颗粒、光线和质感，融得更自然，代价是造型自由度下降。\n"
-                  "预览档永远是 1.0，这个只影响「应用预览并生成正式图」。"),
-    "feather": ("羽化 = 蒙版边缘的过渡宽度（像素）。自动按选区短边的 6% 算。\n"
-                "太大把周围原图也抹模糊，太小会看到硬边。24 MP 的照片一般 10~16 就够。"),
-    "seed": "种子＝随机数起点。固定一个数字，同样的蒙版和提示词就能复现同一张图；保持「随机」则每次都不一样。想微调某张结果时先把它记下来。",
-    "cmatch": "贴回前把生成片段的整体色调统计对齐到蒙版外的原图（LAB 均值与标准差）。关掉它颜色会更贴提示词，但和周围天空/皮肤的色温容易不一样。",
-    "assets": ("素材图：可缺省，也可以放好几张。\n"
-               "模型只有三个参考图槽位，多张素材会自动拼成一张，按从左到右、从上到下排列。"),
-    "norm": "把口语化的描述整理成更贴近 AI 提示词的写法；本地模型不在时用规则整理。",
-}
 
 
 class MainWindow(QMainWindow):
@@ -553,6 +528,13 @@ class MainWindow(QMainWindow):
         self.cm_check.setChecked(True)
         self.cm_check.setToolTip(TIPS["cmatch"])
         af.addRow(self._tip("调色", TIPS["cmatch"]), self.cm_check)
+        self.lock_spin = QDoubleSpinBox()
+        self.lock_spin.setRange(0.00, 0.90)
+        self.lock_spin.setSingleStep(0.05)
+        self.lock_spin.setValue(0.00)
+        self.lock_spin.setSpecialValueText("关闭")
+        self.lock_spin.setToolTip(TIPS["lock"])
+        af.addRow(self._tip("锁构图", TIPS["lock"]), self.lock_spin)
         self.adv_box.setVisible(False)
         lay.addWidget(self.adv_box)
 
@@ -786,6 +768,7 @@ class MainWindow(QMainWindow):
         self.feather_spin.setEnabled(local)
         self.seed_spin.setEnabled(local)
         self.cm_check.setEnabled(local)
+        self.lock_spin.setEnabled(local)
         self.asset_strip.setEnabled(local)
         self.asset_strip.setToolTip("" if local else "远程接口只接受一张原图，素材图暂不参与")
         if not local:
@@ -1121,6 +1104,7 @@ class MainWindow(QMainWindow):
                 cfg=self.cfg_spin.value(),
                 draft_side=self._draft_side(),
                 unet=self._unet(),
+                lock=self.lock_spin.value() if stage == "final" else 0.0,
             )
             if stage == "final" and self._draft_pil is not None:
                 kw["draft"] = self._draft_pil
