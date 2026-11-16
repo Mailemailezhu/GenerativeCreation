@@ -186,6 +186,8 @@ TIPS = {
                   "预览档永远是 1.0，这个只影响「应用预览并生成正式图」。"),
     "feather": ("羽化 = 蒙版边缘的过渡宽度（像素）。自动按选区短边的 6% 算。\n"
                 "太大把周围原图也抹模糊，太小会看到硬边。24 MP 的照片一般 10~16 就够。"),
+    "seed": "种子＝随机数起点。固定一个数字，同样的蒙版和提示词就能复现同一张图；保持「随机」则每次都不一样。想微调某张结果时先把它记下来。",
+    "cmatch": "贴回前把生成片段的整体色调统计对齐到蒙版外的原图（LAB 均值与标准差）。关掉它颜色会更贴提示词，但和周围天空/皮肤的色温容易不一样。",
     "assets": ("素材图：可缺省，也可以放好几张。\n"
                "模型只有三个参考图槽位，多张素材会自动拼成一张，按从左到右、从上到下排列。"),
     "norm": "把口语化的描述整理成更贴近 AI 提示词的写法；本地模型不在时用规则整理。",
@@ -507,29 +509,11 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.prompt_edit)
         lay.addSpacing(6)
 
-        # 融合强度与羽化是调效果时最常动的两个，常显；步数与 CFG 配好 4 步 LoRA 后基本不动，折起来
-        form = QFormLayout()
-        form.setContentsMargins(0, 2, 0, 2)
-        form.setLabelAlignment(Qt.AlignRight)
-        form.setSpacing(6)
-        self.denoise_spin = QDoubleSpinBox()
-        self.denoise_spin.setRange(0.30, 1.00)
-        self.denoise_spin.setSingleStep(0.05)
-        self.denoise_spin.setValue(1.00)
-        self.denoise_spin.setToolTip(TIPS["denoise"])
-        form.addRow(self._tip("融合强度", TIPS["denoise"]), self.denoise_spin)
-        self.feather_spin = QSpinBox()
-        self.feather_spin.setRange(0, 80)
-        self.feather_spin.setValue(0)
-        self.feather_spin.setSpecialValueText("自动")
-        self.feather_spin.setToolTip(TIPS["feather"])
-        form.addRow(self._tip("羽化", TIPS["feather"]), self.feather_spin)
-        lay.addLayout(form)
-
+        # 所有会改生成结果的数字都收进这里：默认值已经配好 4 步 LoRA，平时只调提示词和蒙版
         self.adv_head = QPushButton("▸ 高级设置")
         self.adv_head.setObjectName("collapse")
         self.adv_head.setCheckable(True)
-        self.adv_head.setToolTip("采样轮数与 CFG。现在配的是 4 步加速 LoRA，改成 20 步反而会更慢且不一定更好")
+        self.adv_head.setToolTip("融合强度、羽化、步数、CFG、种子、色彩对齐。默认值适合当前模型，改之前先看提示")
         self.adv_head.toggled.connect(self.on_adv_toggle)
         lay.addWidget(self.adv_head)
 
@@ -538,6 +522,18 @@ class MainWindow(QMainWindow):
         af.setContentsMargins(0, 2, 0, 4)
         af.setLabelAlignment(Qt.AlignRight)
         af.setSpacing(6)
+        self.denoise_spin = QDoubleSpinBox()
+        self.denoise_spin.setRange(0.30, 1.00)
+        self.denoise_spin.setSingleStep(0.05)
+        self.denoise_spin.setValue(1.00)
+        self.denoise_spin.setToolTip(TIPS["denoise"])
+        af.addRow(self._tip("融合强度", TIPS["denoise"]), self.denoise_spin)
+        self.feather_spin = QSpinBox()
+        self.feather_spin.setRange(0, 80)
+        self.feather_spin.setValue(0)
+        self.feather_spin.setSpecialValueText("自动")
+        self.feather_spin.setToolTip(TIPS["feather"])
+        af.addRow(self._tip("羽化", TIPS["feather"]), self.feather_spin)
         self.steps_spin = QSpinBox()
         self.steps_spin.setRange(1, 50)
         self.steps_spin.setValue(4)
@@ -550,6 +546,16 @@ class MainWindow(QMainWindow):
         self.cfg_spin.setValue(1.0)
         self.cfg_spin.setToolTip(TIPS["cfg"])
         af.addRow(self._tip("CFG", TIPS["cfg"]), self.cfg_spin)
+        self.seed_spin = QSpinBox()
+        self.seed_spin.setRange(-1, 2 ** 31 - 1)
+        self.seed_spin.setValue(-1)
+        self.seed_spin.setSpecialValueText("随机")
+        self.seed_spin.setToolTip(TIPS["seed"])
+        af.addRow(self._tip("种子", TIPS["seed"]), self.seed_spin)
+        self.cm_check = QCheckBox("对齐周围色彩")
+        self.cm_check.setChecked(True)
+        self.cm_check.setToolTip(TIPS["cmatch"])
+        af.addRow(self._tip("调色", TIPS["cmatch"]), self.cm_check)
         self.adv_box.setVisible(False)
         lay.addWidget(self.adv_box)
 
@@ -773,6 +779,9 @@ class MainWindow(QMainWindow):
         self.steps_spin.setEnabled(local)
         self.cfg_spin.setEnabled(local)
         self.denoise_spin.setEnabled(local)
+        self.feather_spin.setEnabled(local)
+        self.seed_spin.setEnabled(local)
+        self.cm_check.setEnabled(local)
         self.asset_strip.setEnabled(local)
         self.asset_strip.setToolTip("" if local else "远程接口只接受一张原图，素材图暂不参与")
         if not local:
@@ -1083,6 +1092,8 @@ class MainWindow(QMainWindow):
                 asset_paths=tuple(self.asset_strip.paths()),
                 steps=self.steps_spin.value(),
                 denoise=self.denoise_spin.value(),
+                seed=self.seed_spin.value() if self.seed_spin.value() >= 0 else None,
+                color_match=self.cm_check.isChecked(),
                 cfg=self.cfg_spin.value(),
                 draft_side=self._draft_side(),
                 unet=self._unet(),
