@@ -1,7 +1,7 @@
 # GC 模型目录：模型放项目根 models/ 下，不进入 git
 # 启动时 cwd 为项目根，故 base_path 用相对路径 models
 gc:
-    base_path: models
+    base_path: ../models
     checkpoints: checkpoints
     clip: clip
     clip_vision: clip_vision
