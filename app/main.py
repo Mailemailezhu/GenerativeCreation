@@ -1020,11 +1020,15 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage("已羽化 %.0f px（Ctrl+Z 可撤销）" % px, 4000)
 
     def _draft_side(self):
-        """预览档送模型的 crop 长边。按原图长边乘比例，再夹到 256~2048。"""
+        """预览档送模型的 crop 长边。按原图长边乘比例，再夹到下限~2048。
+
+        FLUX 没有加速 LoRA，512 档会糊成一团，下限给到 768。
+        """
+        lo = 256 if self._family() == "qwen" else 768
         if self.canvas.image is None:
-            return 512
+            return max(lo, 512)
         long_edge = max(self.canvas.image.width(), self.canvas.image.height())
-        return max(256, min(2048, int(round(long_edge * self.preview_ratio))))
+        return max(lo, min(2048, int(round(long_edge * self.preview_ratio))))
 
     def open_preview_settings(self):
         img = self.canvas.image
