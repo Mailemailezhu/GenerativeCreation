@@ -1003,6 +1003,7 @@ class MainWindow(QMainWindow):
                     pass
         for name in ("_gc_tmp", "cache"):
             shutil.rmtree(os.path.join(DATA, name), ignore_errors=True)
+        pipeline.purge_output()
 
     def on_reset(self):
         """丢掉预览和正式图，回到刚打开的原始图像，蒙版一起清空。"""

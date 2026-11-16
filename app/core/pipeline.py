@@ -143,7 +143,9 @@ def run(image, mask, prompt, out_path=None, stage="draft", draft=None,
     entry = client.wait_for(pid, timeout=timeout)
     filename, subfolder, ftype = first_image(entry)
     _tick(progress, 88, "读取结果")
-    gen = Image.open(io.BytesIO(client.fetch_image(filename, subfolder, ftype))).convert("RGB")
+    raw = client.fetch_image(filename, subfolder, ftype)
+    drop_output(host, filename, subfolder)
+    gen = Image.open(io.BytesIO(raw)).convert("RGB")
 
     info = {"stage": stage, "seed": seed, "crop": crop, "size": size}
     if stage == "draft" and not preview_composite:
@@ -167,6 +169,36 @@ def run(image, mask, prompt, out_path=None, stage="draft", draft=None,
 def _tick(progress, pct, msg):
     if progress:
         progress(pct, msg)
+
+
+def _output_dir():
+    return Path(paths.root()) / "engine" / "ComfyUI" / "output"
+
+
+def drop_output(host, filename, subfolder=None):
+    """本地引擎的 output 只当传输通道用：取完字节就把那张图删掉。
+
+    远程引擎删不到，也不能假设布局，直接跳过。
+    """
+    if host not in ("127.0.0.1", "localhost"):
+        return
+    p = _output_dir() / (subfolder or "") / filename
+    try:
+        p.unlink()
+    except OSError:
+        pass
+
+
+def purge_output():
+    """清掉以前版本留在引擎 output 里的生成图。"""
+    try:
+        for p in _output_dir().glob("gc_*.png"):
+            try:
+                p.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
 
 
 def run_api(image, mask, prompt, api, out_path=None, stage="draft", draft_side=None,
