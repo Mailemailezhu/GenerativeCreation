@@ -1,9 +1,9 @@
-"""左侧工具条：工具按两列竖排，底部是原图/对比/预览。
+"""左侧工具条：工具单列竖排（每个两个字，跟 PS 一样窄），底部是原图/对比/预览。
 
 之所以不用 QToolBar：竖向工具栏只会按 sizeHint 给高度，底部那组对照按钮贴不到底。
 """
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtWidgets import QButtonGroup, QFrame, QGridLayout, QPushButton, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QButtonGroup, QFrame, QPushButton, QVBoxLayout, QWidget
 
 VIEWS = (("original", "原图", "只看原始图像"),
          ("split", "对比", "原图与预览并排，拖中间那条线改比例"),
@@ -18,14 +18,11 @@ class SideRail(QWidget):
     def __init__(self, tools, parent=None):
         super().__init__(parent)
         self.setObjectName("rail")
-        self.setFixedWidth(74)
+        self.setFixedWidth(62)
         lay = QVBoxLayout(self)
         lay.setContentsMargins(5, 8, 5, 8)
-        lay.setSpacing(8)
+        lay.setSpacing(6)
 
-        grid = QGridLayout()
-        grid.setSpacing(4)
-        grid.setContentsMargins(0, 0, 0, 0)
         self._group = QButtonGroup(self)
         self._group.setExclusive(True)
         self._tools = {}
@@ -33,14 +30,13 @@ class SideRail(QWidget):
             b = QPushButton(glyph)
             b.setObjectName("tool")
             b.setCheckable(True)
-            b.setFixedSize(30, 28)
+            b.setFixedHeight(28)
             b.setToolTip(tip)
             b.setCursor(Qt.PointingHandCursor)
             b.clicked.connect(lambda _=False, k=key: self.toolPicked.emit(k))
             self._group.addButton(b)
             self._tools[key] = b
-            grid.addWidget(b, i // 2, i % 2)
-        lay.addLayout(grid)
+            lay.addWidget(b)
         lay.addStretch(1)
 
         line = QFrame()

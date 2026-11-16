@@ -22,7 +22,7 @@ FINAL_SIDE = 2048
 
 
 def build_workflow(crop_size, prompt, img_name, mask_name, steps=4, cfg=1.0, seed=0,
-                   draft_name=None, asset_name=None, unet=None):
+                   draft_name=None, asset_name=None, unet=None, denoise=1.0):
     """按档位裁掉不用的参考图节点。
 
     没接上的 LoadImage 会让整个 prompt 校验失败，所以未使用的节点要真的删掉，
@@ -34,7 +34,8 @@ def build_workflow(crop_size, prompt, img_name, mask_name, steps=4, cfg=1.0, see
     wf["5"]["inputs"]["image"] = img_name
     wf["7"]["inputs"]["image"] = mask_name
     wf["11"]["inputs"]["prompt"] = prompt
-    wf["13"]["inputs"].update({"steps": steps, "cfg": cfg, "seed": seed})
+    wf["13"]["inputs"].update({"steps": steps, "cfg": cfg, "seed": seed,
+                              "denoise": denoise})
     if unet:
         wf["1"]["inputs"]["unet_name"] = unet
 
@@ -76,7 +77,7 @@ def prepare(image_path, mask_path, stage="draft", pad=180, min_side=512,
 def run(image_path, mask_path, prompt, out_path, stage="draft", draft_path=None,
         asset_paths=(), preview_composite=True, host="127.0.0.1", port=8188,
         steps=4, cfg=1.0, seed=None, feather=None, color_match=True, timeout=900,
-        progress=None, draft_side=None, unet=None):
+        progress=None, draft_side=None, unet=None, denoise=1.0):
     """跑一档，把结果写到 out_path。
 
     stage="draft" 时可以 preview_composite=False，只拿 crop 小图不贴回。
@@ -118,9 +119,10 @@ def run(image_path, mask_path, prompt, out_path, stage="draft", draft_path=None,
         seed = random.randint(0, 2**31 - 1)
 
     _tick(progress, 16, "组装工作流")
+    # 融合强度只对定稿档有意义：草稿是全重画，再压低 denoise 就看不到新内容
     wf = build_workflow(size, prompt, img_name, mask_name, steps=steps, cfg=cfg,
                         seed=seed, draft_name=draft_name, asset_name=asset_name,
-                        unet=unet)
+                        unet=unet, denoise=denoise if stage == "final" else 1.0)
     _tick(progress, 19, "提交任务")
     pid = client.queue_prompt(wf)
     entry = client.wait_for(pid, timeout=timeout)

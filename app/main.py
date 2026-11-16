@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import (QAction, QActionGroup, QApplication, QCheckBox, QCo
                              QDockWidget, QFrame,
                              QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout,
                              QLabel, QMainWindow, QMessageBox, QProgressBar, QPushButton,
-                             QScrollArea, QSlider, QSpinBox, QTextEdit, QToolBar, QVBoxLayout,
+                             QScrollArea, QSizePolicy, QSlider, QSpinBox, QTextEdit, QToolBar, QVBoxLayout,
                              QWidget)
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -43,6 +43,7 @@ from ui.export_dialog import ExportDialog
 from ui.model_list import ModelList
 from ui.model_page import ModelPage
 from ui.gear_button import GearButton
+from ui.options_bar import OptionsBar
 from ui.preview_settings import PreviewSettings
 from ui.sidebar import SideRail
 from ui.worker import EngineProbe, EngineStarter, GenWorker
@@ -125,6 +126,8 @@ QProgressBar#gen { background: #1e1e1e; border: none; border-radius: 4px; }
 QProgressBar#gen::chunk { background: #2d8ceb; border-radius: 4px; }
 QLabel#dockTitle { background: #252525; color: #9a9a9a; font-weight: bold; padding: 7px 0 5px 10px; }
 QWidget#rail { background: #252525; }
+QWidget#optionsBar { background: #252525; }
+QFrame#vline { background: #3a3a3a; }
 QFrame#railLine { background: #3a3a3a; border: none; }
 QPushButton#tool { background: transparent; border: 1px solid transparent; border-radius: 5px;
     padding: 0; color: #b8b8b8; font-size: $FSpx; }
@@ -143,14 +146,23 @@ def qss(font=UI_FONT):
     return _QSS.replace("$FS2", str(max(9, font - 2))).replace("$FS", str(font))
 
 TOOLS = [
-    ("brush", "画", "画笔蒙版 (B)：涂出要重新生成的范围"),
-    ("eraser", "擦", "橡皮 (E)：擦掉涂过的蒙版"),
-    ("rect", "框", "矩形选框 (M)：拖出一个矩形并入选区"),
-    ("wand", "魔", "魔棒 (W)：点一下，选中颜色相近的连续区域"),
-    ("quick", "快", "快速选择 (Q)：按住拖动，吸附相近颜色"),
-    ("hand", "指", "指针 (H)：拖动画面，也可以按住空格拖"),
-    ("zoom", "缩", "缩放 (Z)：点一下放大，Alt+点击缩小，滚轮也行"),
+    ("brush", "画笔", "画笔蒙版 (B)：涂出要重新生成的范围"),
+    ("eraser", "橡皮", "橡皮 (E)：擦掉涂过的蒙版"),
+    ("rect", "框选", "矩形选框 (M)：拖出一个矩形并入选区"),
+    ("wand", "魔棒", "魔棒 (W)：点一下，选中颜色相近的连续区域"),
+    ("quick", "快速", "快速选择 (Q)：按住拖动，吸附相近颜色"),
+    ("hand", "指针", "指针 (H)：拖动画面，也可以按住空格拖"),
+    ("zoom", "缩放", "缩放 (Z)：点一下放大，Alt+点击缩小，滚轮也行"),
 ]
+
+
+
+def _grow(slider, minimum=80):
+    """滑块按剩余宽度伸缩：固定像素宽在换界面缩放后会顶爆整行。"""
+    slider.setMinimumWidth(minimum)
+    slider.setSizePolicy(QSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed))
+    return slider
+
 
 TOOL_KEYS = {"brush": "B", "eraser": "E", "rect": "M", "wand": "W",
              "quick": "Q", "hand": "H", "zoom": "Z"}
@@ -168,6 +180,12 @@ TIPS = {
     "apply": ("把这张预览当作风格参考，用 原图 + 预览 + 素材图 三张参考重绘正式图。\n"
               "选区裁切后长边 2048，耗时约为预览的 4 到 5 倍。\n"
               "必须先有一张预览。"),
+    "denoise": ("融合强度 = 正式图重绘时保留原图的程度（denoise）。\n"
+                  "1.0 = 蒙版内完全重画，最像模型原图，但风格容易和周围不同；\n"
+                  "0.6~0.8 会保留原片的颗粒、光线和质感，融得更自然，代价是造型自由度下降。\n"
+                  "预览档永远是 1.0，这个只影响「应用预览并生成正式图」。"),
+    "feather": ("羽化 = 蒙版边缘的过渡宽度（像素）。自动按选区短边的 6% 算。\n"
+                "太大把周围原图也抹模糊，太小会看到硬边。24 MP 的照片一般 10~16 就够。"),
     "assets": ("素材图：可缺省，也可以放好几张。\n"
                "模型只有三个参考图槽位，多张素材会自动拼成一张，按从左到右、从上到下排列。"),
     "norm": "把口语化的描述整理成更贴近 AI 提示词的写法；本地模型不在时用规则整理。",
@@ -183,7 +201,15 @@ class MainWindow(QMainWindow):
         self.resize(min(1440, int(scr.width() * 0.94)),
                     min(900, int(scr.height() * 0.94)))
         self.canvas = CanvasView(self)
-        self.setCentralWidget(self.canvas)
+        # 参数栏放在中心布局里，才能和画布一起按窗口宽度分配空间；QToolBar 不参与拉伸
+        self.opts = OptionsBar()
+        central = QWidget(self)
+        cv = QVBoxLayout(central)
+        cv.setContentsMargins(0, 0, 0, 0)
+        cv.setSpacing(0)
+        cv.addWidget(self.opts)
+        cv.addWidget(self.canvas, 1)
+        self.setCentralWidget(central)
         # LrC 传进来的是导出副本路径，和实际打开的 PNG 分开记
         self._lrc_source = None
         self._source_png = None
@@ -314,12 +340,10 @@ class MainWindow(QMainWindow):
             self.addAction(a)
 
     def _build_options(self):
-        ob = QToolBar("选项", self)
-        ob.setMovable(False)
-        self.addToolBar(Qt.TopToolBarArea, ob)
-        self.tool_label = QLabel(" 画笔蒙版")
+        ob = self.opts
+        self.tool_label = QLabel("画笔蒙版")
         self.tool_label.setMinimumWidth(84)
-        ob.addWidget(self.tool_label)
+        ob.add_widget(self.tool_label)
 
         # 画笔组：只有画笔 / 橡皮 / 快速选择用得到，抓手和缩放时整组隐藏
         self.grp_brush = QWidget()
@@ -330,8 +354,8 @@ class MainWindow(QMainWindow):
         self.size_slider = QSlider(Qt.Horizontal)
         self.size_slider.setRange(2, 400)
         self.size_slider.setValue(45)
-        self.size_slider.setFixedWidth(110)
-        gb.addWidget(self.size_slider)
+        _grow(self.size_slider)
+        gb.addWidget(self.size_slider, 3)
         self.size_label = QLabel("45 px")
         self.size_label.setMinimumWidth(46)
         gb.addWidget(self.size_label)
@@ -340,10 +364,10 @@ class MainWindow(QMainWindow):
         self.hard_slider = QSlider(Qt.Horizontal)
         self.hard_slider.setRange(0, 100)
         self.hard_slider.setValue(80)
-        self.hard_slider.setFixedWidth(84)
+        _grow(self.hard_slider)
         self.hard_slider.setToolTip("笔刷边缘的软硬：100 是硬边，0 是整笔柔化（同 PS 的硬度）")
         self.hard_slider.valueChanged.connect(self.on_hardness)
-        gb.addWidget(self.hard_slider)
+        gb.addWidget(self.hard_slider, 2)
         self.hard_label = QLabel("80%")
         self.hard_label.setMinimumWidth(42)
         gb.addWidget(self.hard_label)
@@ -351,14 +375,14 @@ class MainWindow(QMainWindow):
         self.op_slider = QSlider(Qt.Horizontal)
         self.op_slider.setRange(5, 100)
         self.op_slider.setValue(100)
-        self.op_slider.setFixedWidth(80)
+        _grow(self.op_slider)
         self.op_slider.setToolTip("单笔最大浓度；调低后同一处反复涂抹才逐渐加深")
         self.op_slider.valueChanged.connect(self.on_opacity)
-        gb.addWidget(self.op_slider)
+        gb.addWidget(self.op_slider, 2)
         self.op_label = QLabel("100%")
         self.op_label.setMinimumWidth(42)
         gb.addWidget(self.op_label)
-        self.act_brush = ob.addWidget(self.grp_brush)
+        self.act_brush = ob.add_widget(self.grp_brush, 3)
 
         # 容差组：魔棒与快速选择按颜色吸附，容差决定吸多宽
         self.grp_tol = QWidget()
@@ -373,21 +397,13 @@ class MainWindow(QMainWindow):
         self.tol_spin.setToolTip("颜色差多少以内算同一片区域；调大选区更大，调小更挑")
         self.tol_spin.valueChanged.connect(self.on_tolerance)
         gt.addWidget(self.tol_spin)
-        self.act_tol = ob.addWidget(self.grp_tol)
+        self.act_tol = ob.add_widget(self.grp_tol)
 
         # 选区组：羽化与加减模式，所有选区类工具共用，抓手/缩放时隐藏
         self.grp_sel = QWidget()
         gs = QHBoxLayout(self.grp_sel)
         gs.setContentsMargins(0, 0, 0, 0)
         gs.setSpacing(6)
-        gs.addWidget(QLabel("羽化"))
-        self.feather_spin = QSpinBox()
-        self.feather_spin.setRange(0, 80)
-        self.feather_spin.setValue(0)
-        self.feather_spin.setFixedWidth(62)
-        self.feather_spin.setSpecialValueText("自动")
-        self.feather_spin.setToolTip("生成时蒙版边缘的过渡宽度；自动 = 按选区短边的 6% 算。改完可点右侧按钮直接柔化蒙版")
-        gs.addWidget(self.feather_spin)
         self.btn_feather = QPushButton("羽化选区")
         self.btn_feather.setToolTip("对当前蒙版本身做羽化，可 Ctrl+Z 撤销（同 PS 的选择 → 修改 → 羽化）")
         self.btn_feather.clicked.connect(self.on_feather_mask)
@@ -399,20 +415,20 @@ class MainWindow(QMainWindow):
         self.mode_combo.setToolTip("添加 = 扩大选区；减去 = 从选区里擦掉")
         self.mode_combo.currentIndexChanged.connect(self.on_brush_mode)
         gs.addWidget(self.mode_combo)
-        self.act_sel = ob.addWidget(self.grp_sel)
-        ob.addSeparator()
+        self.act_sel = ob.add_widget(self.grp_sel, 1)
+        ob.add_sep()
         self.show_mask_cb = QCheckBox("显示蒙版")
         self.show_mask_cb.setChecked(True)
         self.show_mask_cb.setToolTip("关掉后画布上只显示原图，用来检查生成效果")
         self.show_mask_cb.toggled.connect(lambda v: self.canvas.set_mask_visible(v))
-        ob.addWidget(self.show_mask_cb)
-        ob.addSeparator()
-        ob.addWidget(QLabel("选区"))
+        ob.add_widget(self.show_mask_cb)
+        ob.add_sep()
+        ob.add_widget(QLabel("选区"))
         self.region_label = QLabel("无")
-        ob.addWidget(self.region_label)
+        ob.add_widget(self.region_label)
 
         # 缩放组：只有缩放工具时出现，给 PS 那种「适应窗口」
-        ob.addSeparator()
+        ob.add_sep()
         self.grp_zoom = QWidget()
         gz = QHBoxLayout(self.grp_zoom)
         gz.setContentsMargins(0, 0, 0, 0)
@@ -427,7 +443,8 @@ class MainWindow(QMainWindow):
         for b in (self.btn_zoom_in, self.btn_zoom_out, self.btn_zoom_fit):
             b.setObjectName("ghost")
             gz.addWidget(b)
-        self.act_zoom = ob.addWidget(self.grp_zoom)
+        self.act_zoom = ob.add_widget(self.grp_zoom)
+        ob.finish()
         self.set_tool("brush")
 
     def _build_dock(self):
@@ -490,21 +507,51 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.prompt_edit)
         lay.addSpacing(6)
 
+        # 融合强度与羽化是调效果时最常动的两个，常显；步数与 CFG 配好 4 步 LoRA 后基本不动，折起来
         form = QFormLayout()
+        form.setContentsMargins(0, 2, 0, 2)
         form.setLabelAlignment(Qt.AlignRight)
         form.setSpacing(6)
+        self.denoise_spin = QDoubleSpinBox()
+        self.denoise_spin.setRange(0.30, 1.00)
+        self.denoise_spin.setSingleStep(0.05)
+        self.denoise_spin.setValue(1.00)
+        self.denoise_spin.setToolTip(TIPS["denoise"])
+        form.addRow(self._tip("融合强度", TIPS["denoise"]), self.denoise_spin)
+        self.feather_spin = QSpinBox()
+        self.feather_spin.setRange(0, 80)
+        self.feather_spin.setValue(0)
+        self.feather_spin.setSpecialValueText("自动")
+        self.feather_spin.setToolTip(TIPS["feather"])
+        form.addRow(self._tip("羽化", TIPS["feather"]), self.feather_spin)
+        lay.addLayout(form)
+
+        self.adv_head = QPushButton("▸ 高级设置")
+        self.adv_head.setObjectName("collapse")
+        self.adv_head.setCheckable(True)
+        self.adv_head.setToolTip("采样轮数与 CFG。现在配的是 4 步加速 LoRA，改成 20 步反而会更慢且不一定更好")
+        self.adv_head.toggled.connect(self.on_adv_toggle)
+        lay.addWidget(self.adv_head)
+
+        self.adv_box = QWidget()
+        af = QFormLayout(self.adv_box)
+        af.setContentsMargins(0, 2, 0, 4)
+        af.setLabelAlignment(Qt.AlignRight)
+        af.setSpacing(6)
         self.steps_spin = QSpinBox()
         self.steps_spin.setRange(1, 50)
         self.steps_spin.setValue(4)
         self.steps_spin.setToolTip(TIPS["steps"])
-        form.addRow(self._tip("步数", TIPS["steps"]), self.steps_spin)
+        self.steps_spin.valueChanged.connect(self.on_steps_changed)
+        af.addRow(self._tip("步数", TIPS["steps"]), self.steps_spin)
         self.cfg_spin = QDoubleSpinBox()
         self.cfg_spin.setRange(0.0, 10.0)
-        self.cfg_spin.setSingleStep(0.5)
+        self.cfg_spin.setSingleStep(0.1)
         self.cfg_spin.setValue(1.0)
         self.cfg_spin.setToolTip(TIPS["cfg"])
-        form.addRow(self._tip("CFG", TIPS["cfg"]), self.cfg_spin)
-        lay.addLayout(form)
+        af.addRow(self._tip("CFG", TIPS["cfg"]), self.cfg_spin)
+        self.adv_box.setVisible(False)
+        lay.addWidget(self.adv_box)
 
         lay.addStretch(1)
 
@@ -709,6 +756,10 @@ class MainWindow(QMainWindow):
         dlg.exec_()
         self.refresh_models()
 
+    def on_adv_toggle(self, on):
+        self.adv_box.setVisible(on)
+        self.adv_head.setText(("▾ " if on else "▸ ") + "高级设置")
+
     def on_assets_changed(self):
         n = len(self.asset_strip.paths())
         self.asset_hint.setText("可缺省" if n == 0 else "%d 张" % n)
@@ -721,6 +772,7 @@ class MainWindow(QMainWindow):
         local = self._api_item() is None
         self.steps_spin.setEnabled(local)
         self.cfg_spin.setEnabled(local)
+        self.denoise_spin.setEnabled(local)
         self.asset_strip.setEnabled(local)
         self.asset_strip.setToolTip("" if local else "远程接口只接受一张原图，素材图暂不参与")
         if not local:
@@ -1030,6 +1082,7 @@ class MainWindow(QMainWindow):
             kw.update(
                 asset_paths=tuple(self.asset_strip.paths()),
                 steps=self.steps_spin.value(),
+                denoise=self.denoise_spin.value(),
                 cfg=self.cfg_spin.value(),
                 draft_side=self._draft_side(),
                 unet=self._unet(),
