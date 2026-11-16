@@ -32,7 +32,7 @@ ENGINE_ARGS = [os.path.join("engine", "ComfyUI", "main.py"),
                "--fast-disk"]  # 三块盘都是 NVMe，权重直接从磁盘流式加载
 os.makedirs(DATA, exist_ok=True)
 
-from core import (apimodels, cache, catalog, exporter, hwprobe, lrc, pipeline,
+from core import (apimodels, cache, catalog, exporter, hints, hwprobe, lrc, pipeline,
                   prompt_tools, uiconf)
 from core.comfy_client import ComfyClient
 from core.comfy_ws import ProgressWatcher
@@ -145,15 +145,10 @@ def qss(font=UI_FONT):
     """字号来自 config/ui.json；只重刷样式表就能改，不用重启。"""
     return _QSS.replace("$FS2", str(max(9, font - 2))).replace("$FS", str(font))
 
-TOOLS = [
-    ("brush", "画笔", "画笔蒙版 (B)：涂出要重新生成的范围"),
-    ("eraser", "橡皮", "橡皮 (E)：擦掉涂过的蒙版"),
-    ("rect", "框选", "矩形选框 (M)：拖出一个矩形并入选区"),
-    ("wand", "魔棒", "魔棒 (W)：点一下，选中颜色相近的连续区域"),
-    ("quick", "快速", "快速选择 (Q)：按住拖动，吸附相近颜色"),
-    ("hand", "指针", "指针 (H)：拖动画面，也可以按住空格拖"),
-    ("zoom", "缩放", "缩放 (Z)：点一下放大，Alt+点击缩小，滚轮也行"),
-]
+HINTS = hints.load()  # 界面文案全部来自 config/hints.xml，缺项回落 hints.DEFAULT
+TOOLS = HINTS["tools"]
+TIPS = HINTS["tips"]
+UI = HINTS["ui"]
 
 
 
@@ -315,8 +310,8 @@ class MainWindow(QMainWindow):
             a = QAction("%d%%" % pct, self)
             a.triggered.connect(lambda _=False, p=pct: self.set_ui_scale(p))
             sm.addAction(a)
-        a = QAction("恢复 100%（默认）", self)
-        a.triggered.connect(lambda: self.set_ui_scale(100))
+        a = QAction("恢复默认（%d%%）" % round(uiconf.DEFAULT * 100), self)
+        a.triggered.connect(lambda: self.set_ui_scale(uiconf.DEFAULT))
         sm.addAction(a)
 
     def _build_toolbar(self):
@@ -328,7 +323,7 @@ class MainWindow(QMainWindow):
         empty = QWidget()
         empty.setFixedHeight(0)
         dock.setTitleBarWidget(empty)
-        self.rail = SideRail(TOOLS)
+        self.rail = SideRail(TOOLS, views=HINTS["views"], axis_tip=UI["axis"])
         self.rail.toolPicked.connect(self.set_tool)
         self.rail.viewPicked.connect(self.on_view_mode)
         self.rail.axisPicked.connect(self.on_split_axis)
@@ -367,7 +362,7 @@ class MainWindow(QMainWindow):
         self.hard_slider.setRange(0, 100)
         self.hard_slider.setValue(80)
         _grow(self.hard_slider)
-        self.hard_slider.setToolTip("笔刷边缘的软硬：100 是硬边，0 是整笔柔化（同 PS 的硬度）")
+        self.hard_slider.setToolTip(UI["brush_hard"])
         self.hard_slider.valueChanged.connect(self.on_hardness)
         gb.addWidget(self.hard_slider, 2)
         self.hard_label = QLabel("80%")
@@ -378,7 +373,7 @@ class MainWindow(QMainWindow):
         self.op_slider.setRange(5, 100)
         self.op_slider.setValue(100)
         _grow(self.op_slider)
-        self.op_slider.setToolTip("单笔最大浓度；调低后同一处反复涂抹才逐渐加深")
+        self.op_slider.setToolTip(UI["brush_opacity"])
         self.op_slider.valueChanged.connect(self.on_opacity)
         gb.addWidget(self.op_slider, 2)
         self.op_label = QLabel("100%")
@@ -396,7 +391,7 @@ class MainWindow(QMainWindow):
         self.tol_spin.setRange(1, 255)
         self.tol_spin.setValue(32)
         self.tol_spin.setFixedWidth(62)
-        self.tol_spin.setToolTip("颜色差多少以内算同一片区域；调大选区更大，调小更挑")
+        self.tol_spin.setToolTip(UI["tolerance"])
         self.tol_spin.valueChanged.connect(self.on_tolerance)
         gt.addWidget(self.tol_spin)
         self.act_tol = ob.add_widget(self.grp_tol)
@@ -407,21 +402,21 @@ class MainWindow(QMainWindow):
         gs.setContentsMargins(0, 0, 0, 0)
         gs.setSpacing(6)
         self.btn_feather = QPushButton("羽化选区")
-        self.btn_feather.setToolTip("对当前蒙版本身做羽化，可 Ctrl+Z 撤销（同 PS 的选择 → 修改 → 羽化）")
+        self.btn_feather.setToolTip(UI["feather_btn"])
         self.btn_feather.clicked.connect(self.on_feather_mask)
         gs.addWidget(self.btn_feather)
         gs.addWidget(QLabel("模式"))
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["添加", "减去"])
         self.mode_combo.setFixedWidth(64)
-        self.mode_combo.setToolTip("添加 = 扩大选区；减去 = 从选区里擦掉")
+        self.mode_combo.setToolTip(UI["mode"])
         self.mode_combo.currentIndexChanged.connect(self.on_brush_mode)
         gs.addWidget(self.mode_combo)
         self.act_sel = ob.add_widget(self.grp_sel, 1)
         ob.add_sep()
         self.show_mask_cb = QCheckBox("显示蒙版")
         self.show_mask_cb.setChecked(True)
-        self.show_mask_cb.setToolTip("关掉后画布上只显示原图，用来检查生成效果")
+        self.show_mask_cb.setToolTip(UI["show_mask"])
         self.show_mask_cb.toggled.connect(lambda v: self.canvas.set_mask_visible(v))
         ob.add_widget(self.show_mask_cb)
         ob.add_sep()
@@ -438,7 +433,7 @@ class MainWindow(QMainWindow):
         self.btn_zoom_in = QPushButton("放大")
         self.btn_zoom_out = QPushButton("缩小")
         self.btn_zoom_fit = QPushButton("适应窗口")
-        self.btn_zoom_fit.setToolTip("把整张图塞进画布，快捷键 Ctrl+0")
+        self.btn_zoom_fit.setToolTip(UI["zoom_fit"])
         self.btn_zoom_in.clicked.connect(lambda: self.zoom_center(1.25))
         self.btn_zoom_out.clicked.connect(lambda: self.zoom_center(1 / 1.25))
         self.btn_zoom_fit.clicked.connect(self.canvas.fit_view)
@@ -463,7 +458,7 @@ class MainWindow(QMainWindow):
         self.model_head = QPushButton("▸ 模型")
         self.model_head.setObjectName("collapse")
         self.model_head.setCheckable(True)
-        self.model_head.setToolTip("点开可以选择主模型、添加模型或接远程 API")
+        self.model_head.setToolTip(UI["model_head"])
         self.model_head.toggled.connect(self.on_model_toggle)
         lay.addWidget(self.model_head)
         self.model_list = ModelList()
@@ -513,7 +508,7 @@ class MainWindow(QMainWindow):
         self.adv_head = QPushButton("▸ 高级设置")
         self.adv_head.setObjectName("collapse")
         self.adv_head.setCheckable(True)
-        self.adv_head.setToolTip("融合强度、羽化、步数、CFG、种子、色彩对齐。默认值适合当前模型，改之前先看提示")
+        self.adv_head.setToolTip(UI["adv_head"])
         self.adv_head.toggled.connect(self.on_adv_toggle)
         lay.addWidget(self.adv_head)
 
@@ -579,7 +574,7 @@ class MainWindow(QMainWindow):
         self.btn_gen.setToolTip(TIPS["gen"])
         self.btn_gen.clicked.connect(self.on_generate)
         self.btn_gen.gearClicked.connect(self.open_preview_settings)
-        self.btn_gen.gear.setToolTip("预览大小设置")
+        self.btn_gen.gear.setToolTip(UI["preview_size"])
 
         self.btn_apply = QPushButton("应用预览并生成正式图")
         self.btn_apply.setEnabled(False)

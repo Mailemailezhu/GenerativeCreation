@@ -27,6 +27,8 @@ def apply():
     except (TypeError, ValueError):
         scale = uiconf.DEFAULT
     if not scale or scale <= 0:
+        scale = uiconf.DEFAULT
+    if not scale or scale <= 0:
         scale = 1.0
     os.environ["QT_SCALE_FACTOR"] = "%.2f" % scale
     return scale

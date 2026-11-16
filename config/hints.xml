@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 界面上的所有提示文案都在这个文件里。改完保存，重开 GC 生效。
+     缺项会自动回落到程序内置的默认值；tools / views 的顺序就是界面上的顺序。-->
+<gc-hints>
+  <tips>
+    <tip key="steps">采样步数：模型去噪迭代多少次。
+本机实测每步约 5 秒（RTX 5070 12GB + Q5 模型）。
+预览档 4 步约 20 秒采样；调到 8 步约 40 秒，画质提升有限。
+步数翻倍时间就翻倍，和显存无关。</tip>
+    <tip key="cfg">CFG = 提示词引导强度（Classifier-Free Guidance）。
+数值越高越死板地贴提示词、色彩更硬；越低越自由。
+本工作流挂了 4 步加速 LoRA，CFG 必须保持 1.0，调高会过曝、发糊甚至崩图。</tip>
+    <tip key="gen">先用低分辨率出一张预览：选区裁切后长边 512，约 20 秒。
+只看构图和效果，不代表最终画质；重新生成会覆盖上一张。</tip>
+    <tip key="apply">把这张预览当作风格参考，用 原图 + 预览 + 素材图 三张参考重绘正式图。
+选区裁切后长边 2048，耗时约为预览的 4 到 5 倍。
+必须先有一张预览。</tip>
+    <tip key="denoise">融合强度 = 正式图重绘时保留原图的程度（denoise）。
+1.0 = 蒙版内完全重画，最像模型原图，但风格容易和周围不同；
+0.6~0.8 会保留原片的颗粒、光线和质感，融得更自然，代价是造型自由度下降。
+预览档永远是 1.0，这个只影响「应用预览并生成正式图」。</tip>
+    <tip key="feather">羽化 = 蒙版边缘的过渡宽度（像素）。自动按选区短边的 6% 算。
+太大把周围原图也抹模糊，太小会看到硬边。24 MP 的照片一般 10~16 就够。</tip>
+    <tip key="seed">种子＝随机数起点。固定一个数字，同样的蒙版和提示词就能复现同一张图；保持「随机」则每次都不一样。想微调某张结果时先把它记下来。</tip>
+    <tip key="cmatch">贴回前把生成片段的整体色调统计对齐到蒙版外的原图（LAB 均值与标准差）。关掉它颜色会更贴提示词，但和周围天空/皮肤的色温容易不一样。</tip>
+    <tip key="assets">素材图：可缺省，也可以放好几张。
+模型只有三个参考图槽位，多张素材会自动拼成一张，按从左到右、从上到下排列。</tip>
+    <tip key="norm">把口语化的描述整理成更贴近 AI 提示词的写法；本地模型不在时用规则整理。</tip>
+  </tips>
+  <ui>
+    <item key="brush_hard">笔刷边缘的软硬：100 是硬边，0 是整笔柔化（同 PS 的硬度）</item>
+    <item key="brush_opacity">单笔最大浓度；调低后同一处反复涂抹才逐渐加深</item>
+    <item key="tolerance">颜色差多少以内算同一片区域；调大选区更大，调小更挑</item>
+    <item key="feather_btn">对当前蒙版本身做羽化，可 Ctrl+Z 撤销（同 PS 的选择 → 修改 → 羽化）</item>
+    <item key="mode">添加 = 扩大选区；减去 = 从选区里擦掉</item>
+    <item key="show_mask">关掉后画布上只显示原图，用来检查生成效果</item>
+    <item key="zoom_fit">把整张图塞进画布，快捷键 Ctrl+0</item>
+    <item key="model_head">点开可以选择主模型、添加模型或接远程 API</item>
+    <item key="adv_head">融合强度、羽化、步数、CFG、种子、色彩对齐。默认值适合当前模型，改之前先看提示</item>
+    <item key="preview_size">预览大小设置</item>
+    <item key="model_list">当前软件能直接驱动的主模型。点「添加模型」可以看这台电脑还能装哪些。</item>
+    <item key="model_add">读取本机显卡与内存，列出能直接用于本软件的模型，一键安装</item>
+    <item key="asset_plus">添加素材图（可多选）</item>
+    <item key="asset_remove">{name}
+右键移除</item>
+    <item key="asset_hint">点击选择原始图像（也可以从 LrC 用「编辑于」直接打开）</item>
+    <item key="axis">切换分割线方向：左右拖动 / 上下拖动</item>
+  </ui>
+  <tools>
+    <tool key="brush" name="画笔">画笔蒙版 (B)：涂出要重新生成的范围</tool>
+    <tool key="eraser" name="橡皮">橡皮 (E)：擦掉涂过的蒙版</tool>
+    <tool key="rect" name="框选">矩形选框 (M)：拖出一个矩形并入选区</tool>
+    <tool key="wand" name="魔棒">魔棒 (W)：点一下，选中颜色相近的连续区域</tool>
+    <tool key="quick" name="快速">快速选择 (Q)：按住拖动，吸附相近颜色</tool>
+    <tool key="hand" name="指针">指针 (H)：拖动画面，也可以按住空格拖</tool>
+    <tool key="zoom" name="缩放">缩放 (Z)：点一下放大，Alt+点击缩小，滚轮也行</tool>
+  </tools>
+  <views>
+    <view key="original" label="原图">只看原始图像</view>
+    <view key="split" label="对比">原图与预览并排，拖中间那条线改比例</view>
+    <view key="result" label="预览">只看生成结果</view>
+  </views>
+</gc-hints>

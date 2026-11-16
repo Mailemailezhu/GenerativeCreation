@@ -6,7 +6,11 @@ from PyQt5.QtGui import QColor, QPainter, QPainterPath, QPen, QPixmap
 from PyQt5.QtWidgets import (QFileDialog, QFrame, QHBoxLayout, QLabel, QSizePolicy,
                              QVBoxLayout, QWidget)
 
+from core.hints import load as _load_hints
+
 from .flow_layout import FlowLayout
+
+UI = _load_hints()["ui"]
 
 THUMB = 76
 
@@ -27,7 +31,7 @@ class PlusTile(QFrame):
         self._size = size
         self.setFixedSize(size, size)
         self.setCursor(Qt.PointingHandCursor)
-        self.setToolTip("添加素材图（可多选）")
+        self.setToolTip(UI["asset_plus"])
         # 和「原始图」卡片保持同一套底色/描边，两个区块才不会像两套风格
         self._hover = False
 
@@ -78,7 +82,7 @@ class ThumbTile(QFrame):
         self._pix = _cover(path, size)
         self._hover = False
         self.setFixedSize(size, size)
-        self.setToolTip(f"{os.path.basename(path)}\n右键移除")
+        self.setToolTip(UI["asset_remove"].format(name=os.path.basename(path)))
 
     def enterEvent(self, event):
         self._hover = True
@@ -191,7 +195,7 @@ class SourceCard(QFrame):
         self.setObjectName("srcCard")
         self.setAttribute(Qt.WA_Hover, True)
         self.setCursor(Qt.PointingHandCursor)
-        self.setToolTip("点击选择原始图像（也可以从 LrC 用「编辑于」直接打开）")
+        self.setToolTip(UI["asset_hint"])
         self.setFixedHeight(92)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)

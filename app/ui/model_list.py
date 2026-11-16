@@ -2,6 +2,10 @@
 from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtWidgets import QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget
 
+from core.hints import load as _load_hints
+
+UI = _load_hints()["ui"]
+
 STATE_TEXT = {"installed": "已安装", "ready": "可安装", "blocked": "装不下"}
 API_ID = "@api"
 
@@ -17,12 +21,12 @@ class ModelList(QWidget):
         lay.setSpacing(4)
         self.list = QListWidget()
         self.list.setFixedHeight(88)
-        self.list.setToolTip("当前软件能直接驱动的主模型。点「添加模型」可以看这台电脑还能装哪些。")
+        self.list.setToolTip(UI["model_list"])
         self.list.itemClicked.connect(self._on_click)
         lay.addWidget(self.list)
         self.btn_add = QPushButton("＋ 添加模型")
         self.btn_add.setObjectName("ghost")
-        self.btn_add.setToolTip("读取本机显卡与内存，列出能直接用于本软件的模型，一键安装")
+        self.btn_add.setToolTip(UI["model_add"])
         self.btn_add.clicked.connect(self.addRequested.emit)
         lay.addWidget(self.btn_add)
         self.set_models([])

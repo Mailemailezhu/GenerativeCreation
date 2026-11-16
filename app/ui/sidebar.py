@@ -122,7 +122,7 @@ class SideRail(QWidget):
     viewPicked = pyqtSignal(str)
     axisPicked = pyqtSignal()
 
-    def __init__(self, tools, parent=None):
+    def __init__(self, tools, views=None, axis_tip="", parent=None):
         super().__init__(parent)
         self.setObjectName("rail")
         self.setFixedWidth(46)
@@ -156,7 +156,7 @@ class SideRail(QWidget):
         lay.addWidget(line)
 
         self._views = {}
-        for mode, text, tip in VIEWS:
+        for mode, text, tip in (views or VIEWS):
             b = QPushButton(text)
             b.setObjectName("railseg")
             b.setCheckable(True)
@@ -170,7 +170,7 @@ class SideRail(QWidget):
         self.btn_axis = QPushButton("\u21c4")
         self.btn_axis.setObjectName("railseg")
         self.btn_axis.setFixedHeight(24)
-        self.btn_axis.setToolTip("切换分割线方向：\u21c4 左右拖动 / \u21c5 上下拖动")
+        self.btn_axis.setToolTip(axis_tip or "切换分割线方向：\u21c4 左右拖动 / \u21c5 上下拖动")
         self.btn_axis.setCursor(Qt.PointingHandCursor)
         self.btn_axis.clicked.connect(lambda: self.axisPicked.emit())
         lay.addWidget(self.btn_axis)

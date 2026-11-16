@@ -60,6 +60,7 @@ Set-Content -Path (Join-Path $Rel "GC.bat") -Value $Bat -Encoding ASCII
 New-Item -ItemType Directory -Path (Join-Path $Rel "config") | Out-Null
 Copy-Item (Join-Path $Root "config\extra_model_paths.yaml") -Destination (Join-Path $Rel "config")
 Copy-Item (Join-Path $Root "config\api_models.example.json") -Destination (Join-Path $Rel "config")
+Copy-Item (Join-Path $Root "config\hints.xml") -Destination (Join-Path $Rel "config")
 $Zip = Join-Path $Root ("release\GC-" + $Version + "-windows-x64.zip")
 Compress-Archive -Path (Join-Path $Rel "*") -DestinationPath $Zip -CompressionLevel Optimal
 Write-Host ("BUILD_OK " + $Exe)

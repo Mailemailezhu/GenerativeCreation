@@ -2,8 +2,8 @@
 import json
 import os
 
-DEFAULT = 1.0  # 0 = 跟随系统
-DEFAULT_FONT = 12  # 界面字号（px）
+DEFAULT = 1.25  # 125%：2K 屏上既能看清又不挤；0 = 跟随系统
+DEFAULT_FONT = 14  # 界面字号（px）
 
 
 def path(root):
