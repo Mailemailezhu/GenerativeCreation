@@ -5,6 +5,7 @@ import sys
 import numpy as np
 from PIL import Image
 from PyQt5.QtCore import QSize, Qt, QTimer
+from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import (QAction, QActionGroup, QApplication, QCheckBox, QComboBox,
                              QDockWidget,
                              QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout,
@@ -13,7 +14,8 @@ from PyQt5.QtWidgets import (QAction, QActionGroup, QApplication, QCheckBox, QCo
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, APP_DIR)
-ROOT = os.path.dirname(APP_DIR)
+from core import paths
+ROOT = paths.root()
 DATA = os.path.join(ROOT, "data")
 MODELS = os.path.join(ROOT, "models")
 API_PATH = os.path.join(ROOT, "config", "api_models.json")
@@ -828,12 +830,27 @@ def main():
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
     app.setApplicationName("GC")
+    icon = paths.asset("gc.ico")
+    if os.path.exists(icon):
+        app.setWindowIcon(QIcon(icon))
     w = MainWindow()
+    if os.path.exists(icon):
+        w.setWindowIcon(QIcon(icon))
     w.show()
     # LrC 的「编辑于」把导出副本的路径追加在命令行末尾
     files = [a for a in sys.argv[1:] if not a.startswith("-")]
     if files:
         w.open_from_lrc(files[0])
+    # 打包后自检：能开窗、能拿到根目录，就说明资源与模型路径都没断
+    if "--selftest" in sys.argv:
+        def done():
+            shot = os.path.join(DATA, "_selftest.png")
+            w.grab().save(shot)
+            with open(os.path.join(DATA, "_selftest.txt"), "w", encoding="utf-8") as f:
+                f.write("SELFTEST_OK %s %s\n" % (ROOT, shot))
+            print("SELFTEST_OK", ROOT, shot, flush=True)
+            app.quit()
+        QTimer.singleShot(1200, done)
     sys.exit(app.exec_())
 
 

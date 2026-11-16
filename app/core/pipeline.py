@@ -13,10 +13,10 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from . import apimodels, assets, image_ops as ops
+from . import apimodels, assets, image_ops as ops, paths
 from .comfy_client import ComfyClient, ComfyError, first_image
 
-WORKFLOW = Path(__file__).resolve().parents[2] / "workflows" / "qwen_edit_2511_inpaint.json"
+WORKFLOW = Path(paths.root()) / "workflows" / "qwen_edit_2511_inpaint.json"
 DRAFT_SIDE = 512
 FINAL_SIDE = 2048
 
