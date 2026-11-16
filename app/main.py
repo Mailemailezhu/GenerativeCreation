@@ -28,7 +28,8 @@ ENGINE_ARGS = [os.path.join("engine", "ComfyUI", "main.py"),
                "--fast-disk"]  # 三块盘都是 NVMe，权重直接从磁盘流式加载
 os.makedirs(DATA, exist_ok=True)
 
-from core import apimodels, cache, catalog, exporter, hwprobe, lrc, pipeline, prompt_tools
+from core import (apimodels, cache, catalog, exporter, hwprobe, lrc, pipeline,
+                  prompt_tools, uiconf)
 from core.comfy_client import ComfyClient
 from core.comfy_ws import ProgressWatcher
 from ui.api_page import ApiPage
@@ -38,13 +39,14 @@ from ui.export_dialog import ExportDialog
 from ui.model_list import ModelList
 from ui.model_page import ModelPage
 from ui.gear_button import GearButton
-from ui.preview import PreviewWindow
 from ui.preview_settings import PreviewSettings
 from ui.worker import EngineProbe, EngineStarter, GenWorker
 
 QSS = """
-QMainWindow, QWidget { background: #2d2d2d; color: #d0d0d0;
-    font-family: "Microsoft YaHei UI", "Segoe UI"; font-size: 12px; }
+QMainWindow, QDialog { background: #2d2d2d; }
+QWidget { background: #2d2d2d; color: #d0d0d0;
+    font-family: "Microsoft YaHei UI", "Segoe UI"; font-size: 13px; }
+QLabel, QCheckBox, QToolBar QLabel, QToolBar QCheckBox { background: transparent; }
 QMenuBar { background: #252525; border-bottom: 1px solid #1a1a1a; }
 QMenuBar::item { padding: 5px 10px; background: transparent; }
 QMenuBar::item:selected { background: #3a3a3a; }
@@ -81,6 +83,11 @@ QPushButton#ghost { background: transparent; border: 1px solid #4a4a4a; color: #
     padding: 3px 10px; border-radius: 5px; font-size: 11px; }
 QPushButton#ghost:hover { background: #3a3a3a; color: #e6e6e6; }
 QPushButton#ghost:disabled { color: #5a5a5a; border-color: #3a3a3a; }
+QPushButton#seg { background: transparent; border: 1px solid #4a4a4a; border-radius: 4px;
+    padding: 4px 10px; color: #b0b0b0; }
+QPushButton#seg:hover { background: #3a3a3a; }
+QPushButton#seg:checked { background: #2d8ceb; border-color: #2d8ceb; color: #ffffff; }
+QPushButton#seg:disabled { color: #4f4f4f; border-color: #333333; }
 QFrame#srcCard { background: transparent; border: 1px solid #3a3a3a; border-radius: 8px; }
 QPushButton#collapse { background: transparent; border: none; color: #8a8a8a;
     font-weight: bold; text-align: left; padding: 6px 0 2px 0; }
@@ -102,17 +109,20 @@ QStatusBar { background: #252525; color: #909090; border-top: 1px solid #1a1a1a;
 QStatusBar::item { border: none; }
 QProgressBar#gen { background: #1e1e1e; border: none; border-radius: 4px; }
 QProgressBar#gen::chunk { background: #2d8ceb; border-radius: 4px; }
-QScrollBar:vertical { background: #252525; width: 10px; }
-QScrollBar::handle:vertical { background: #4a4a4a; border-radius: 5px; min-height: 24px; }
-QScrollBar::add-line, QScrollBar::sub-line { height: 0; }
 """
 
 TOOLS = [
-    ("brush", "画", "画笔蒙版 (B)：在画面上涂出要重新生成的范围"),
-    ("eraser", "擦", "橡皮 (E)：把涂到的蒙版擦掉"),
+    ("brush", "画", "画笔蒙版 (B)：涂出要重新生成的范围"),
+    ("eraser", "擦", "橡皮 (E)：擦掉涂过的蒙版"),
+    ("rect", "框", "矩形选框 (M)：拖出一个矩形并入选区"),
+    ("wand", "魔", "魔棒 (W)：点一下，选中颜色相近的连续区域"),
+    ("quick", "快", "快速选择 (Q)：按住拖动，吸附相近颜色"),
     ("hand", "手", "抓手 (H)：拖动画面，也可以按住空格拖"),
-    ("zoom", "缩", "缩放 (Z)：滚轮以鼠标为中心放大缩小"),
+    ("zoom", "缩", "缩放 (Z)：点一下放大，Alt+点击缩小，滚轮也行"),
 ]
+
+TOOL_KEYS = {"brush": "B", "eraser": "E", "rect": "M", "wand": "W",
+             "quick": "Q", "hand": "H", "zoom": "Z"}
 
 TIPS = {
     "steps": ("采样步数：模型去噪迭代多少次。\n"
@@ -137,7 +147,9 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("GC")
-        self.resize(1440, 900)
+        scr = QApplication.primaryScreen().availableGeometry()
+        self.resize(min(1440, int(scr.width() * 0.94)),
+                    min(900, int(scr.height() * 0.94)))
         self.canvas = CanvasView(self)
         self.setCentralWidget(self.canvas)
         # LrC 传进来的是导出副本路径，和实际打开的 PNG 分开记
@@ -153,7 +165,6 @@ class MainWindow(QMainWindow):
         self.preview_ratio = 0.10
         self._src_orig = None
         self.model_id = None
-        self.preview = PreviewWindow(self)
         self.watcher = ProgressWatcher()
         self.watcher.progress.connect(self.on_progress)
         self._build_menu()
@@ -213,6 +224,29 @@ class MainWindow(QMainWindow):
         a.setShortcut("Ctrl+1")
         a.triggered.connect(lambda: self.canvas.zoom_to(1.0))
         m.addAction(a)
+        m.addSeparator()
+        sub = m.addMenu("查看")
+        for text, mode, sc in (("编辑蒙版", "edit", "Ctrl+Alt+0"),
+                               ("原图与预览对比", "split", "Ctrl+Alt+1"),
+                               ("仅原图", "original", "Ctrl+Alt+2"),
+                               ("仅预览", "result", "Ctrl+Alt+3")):
+            a = QAction(text, self)
+            a.setShortcut(sc)
+            a.triggered.connect(lambda _=False, mm=mode: self.on_view_mode(mm))
+            sub.addAction(a)
+        a = QAction("切换分割线方向", self)
+        a.setShortcut("Ctrl+Alt+X")
+        a.triggered.connect(self.on_split_axis)
+        sub.addAction(a)
+        m.addSeparator()
+        sm = m.addMenu("界面缩放")
+        for pct in (100, 125, 150, 175):
+            a = QAction("%d%%" % pct, self)
+            a.triggered.connect(lambda _=False, p=pct: self.set_ui_scale(p))
+            sm.addAction(a)
+        a = QAction("跟随系统缩放", self)
+        a.triggered.connect(lambda: self.set_ui_scale(None))
+        sm.addAction(a)
 
     def _build_toolbar(self):
         tb = QToolBar("工具", self)
@@ -226,6 +260,7 @@ class MainWindow(QMainWindow):
         for key, glyph, tip in TOOLS:
             act = QAction(glyph, self)
             act.setToolTip(tip)
+            act.setShortcut(TOOL_KEYS.get(key, ""))
             act.setCheckable(True)
             act.setData(key)
             act.triggered.connect(lambda checked, k=key: self.set_tool(k))
@@ -242,57 +277,86 @@ class MainWindow(QMainWindow):
         self.tool_label = QLabel(" 画笔蒙版")
         self.tool_label.setMinimumWidth(84)
         ob.addWidget(self.tool_label)
-        ob.addWidget(QLabel("大小"))
+
+        # 画笔组：只有画笔 / 橡皮 / 快速选择用得到，抓手和缩放时整组隐藏
+        self.grp_brush = QWidget()
+        gb = QHBoxLayout(self.grp_brush)
+        gb.setContentsMargins(0, 0, 0, 0)
+        gb.setSpacing(6)
+        gb.addWidget(QLabel("大小"))
         self.size_slider = QSlider(Qt.Horizontal)
         self.size_slider.setRange(2, 400)
         self.size_slider.setValue(45)
-        self.size_slider.setFixedWidth(150)
-        ob.addWidget(self.size_slider)
+        self.size_slider.setFixedWidth(110)
+        gb.addWidget(self.size_slider)
         self.size_label = QLabel("45 px")
         self.size_label.setMinimumWidth(46)
-        ob.addWidget(self.size_label)
+        gb.addWidget(self.size_label)
         self.size_slider.valueChanged.connect(self.on_brush_size)
-        ob.addWidget(QLabel("硬度"))
+        gb.addWidget(QLabel("硬度"))
         self.hard_slider = QSlider(Qt.Horizontal)
         self.hard_slider.setRange(0, 100)
         self.hard_slider.setValue(80)
-        self.hard_slider.setFixedWidth(96)
+        self.hard_slider.setFixedWidth(84)
         self.hard_slider.setToolTip("笔刷边缘的软硬：100 是硬边，0 是整笔柔化（同 PS 的硬度）")
         self.hard_slider.valueChanged.connect(self.on_hardness)
-        ob.addWidget(self.hard_slider)
+        gb.addWidget(self.hard_slider)
         self.hard_label = QLabel("80%")
         self.hard_label.setMinimumWidth(42)
-        ob.addWidget(self.hard_label)
-        ob.addWidget(QLabel("不透明度"))
+        gb.addWidget(self.hard_label)
+        gb.addWidget(QLabel("不透明度"))
         self.op_slider = QSlider(Qt.Horizontal)
         self.op_slider.setRange(5, 100)
         self.op_slider.setValue(100)
-        self.op_slider.setFixedWidth(90)
+        self.op_slider.setFixedWidth(80)
         self.op_slider.setToolTip("单笔最大浓度；调低后同一处反复涂抹才逐渐加深")
         self.op_slider.valueChanged.connect(self.on_opacity)
-        ob.addWidget(self.op_slider)
+        gb.addWidget(self.op_slider)
         self.op_label = QLabel("100%")
         self.op_label.setMinimumWidth(42)
-        ob.addWidget(self.op_label)
-        ob.addWidget(QLabel("羽化"))
+        gb.addWidget(self.op_label)
+        self.act_brush = ob.addWidget(self.grp_brush)
+
+        # 容差组：魔棒与快速选择按颜色吸附，容差决定吸多宽
+        self.grp_tol = QWidget()
+        gt = QHBoxLayout(self.grp_tol)
+        gt.setContentsMargins(0, 0, 0, 0)
+        gt.setSpacing(6)
+        gt.addWidget(QLabel("容差"))
+        self.tol_spin = QSpinBox()
+        self.tol_spin.setRange(1, 255)
+        self.tol_spin.setValue(32)
+        self.tol_spin.setFixedWidth(62)
+        self.tol_spin.setToolTip("颜色差多少以内算同一片区域；调大选区更大，调小更挑")
+        self.tol_spin.valueChanged.connect(self.on_tolerance)
+        gt.addWidget(self.tol_spin)
+        self.act_tol = ob.addWidget(self.grp_tol)
+
+        # 选区组：羽化与加减模式，所有选区类工具共用，抓手/缩放时隐藏
+        self.grp_sel = QWidget()
+        gs = QHBoxLayout(self.grp_sel)
+        gs.setContentsMargins(0, 0, 0, 0)
+        gs.setSpacing(6)
+        gs.addWidget(QLabel("羽化"))
         self.feather_spin = QSpinBox()
         self.feather_spin.setRange(0, 80)
         self.feather_spin.setValue(0)
         self.feather_spin.setFixedWidth(62)
         self.feather_spin.setSpecialValueText("自动")
         self.feather_spin.setToolTip("生成时蒙版边缘的过渡宽度；自动 = 按选区短边的 6% 算。改完可点右侧按钮直接柔化蒙版")
-        ob.addWidget(self.feather_spin)
+        gs.addWidget(self.feather_spin)
         self.btn_feather = QPushButton("羽化选区")
         self.btn_feather.setToolTip("对当前蒙版本身做羽化，可 Ctrl+Z 撤销（同 PS 的选择 → 修改 → 羽化）")
         self.btn_feather.clicked.connect(self.on_feather_mask)
-        ob.addWidget(self.btn_feather)
-        ob.addWidget(QLabel("模式"))
+        gs.addWidget(self.btn_feather)
+        gs.addWidget(QLabel("模式"))
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["添加", "减去"])
         self.mode_combo.setFixedWidth(64)
         self.mode_combo.setToolTip("添加 = 扩大选区；减去 = 从选区里擦掉")
         self.mode_combo.currentIndexChanged.connect(self.on_brush_mode)
-        ob.addWidget(self.mode_combo)
+        gs.addWidget(self.mode_combo)
+        self.act_sel = ob.addWidget(self.grp_sel)
         ob.addSeparator()
         self.show_mask_cb = QCheckBox("显示蒙版")
         self.show_mask_cb.setChecked(True)
@@ -303,6 +367,35 @@ class MainWindow(QMainWindow):
         ob.addWidget(QLabel("选区"))
         self.region_label = QLabel("无")
         ob.addWidget(self.region_label)
+
+        # 原图 / 预览 对照：照 LrC 的参考视图做，出图后自动切到对比
+        ob.addSeparator()
+        self.grp_view = QWidget()
+        gv = QHBoxLayout(self.grp_view)
+        gv.setContentsMargins(0, 0, 0, 0)
+        gv.setSpacing(2)
+        self.btn_v_orig = QPushButton("原图")
+        self.btn_v_split = QPushButton("对比")
+        self.btn_v_res = QPushButton("预览")
+        for b, mode in ((self.btn_v_orig, "original"),
+                        (self.btn_v_split, "split"),
+                        (self.btn_v_res, "result")):
+            b.setObjectName("seg")
+            b.setCheckable(True)
+            b.clicked.connect(lambda _=False, m=mode: self.on_view_mode(m))
+            gv.addWidget(b)
+        self.btn_v_split.setChecked(True)
+        self.btn_v_orig.setToolTip("只看原始图像")
+        self.btn_v_split.setToolTip("原图与预览并排对照，拖中间那条线改比例")
+        self.btn_v_res.setToolTip("只看生成结果")
+        self.btn_axis = QPushButton("⇄")
+        self.btn_axis.setObjectName("seg")
+        self.btn_axis.setFixedWidth(34)
+        self.btn_axis.setToolTip("切换分割线方向：⇄ 左右拖动 / ⇅ 上下拖动")
+        self.btn_axis.clicked.connect(self.on_split_axis)
+        gv.addWidget(self.btn_axis)
+        ob.addWidget(self.grp_view)
+        self.grp_view.setEnabled(False)
 
     def _build_dock(self):
         dock = QDockWidget("创作", self)
@@ -653,11 +746,21 @@ class MainWindow(QMainWindow):
         self.canvas.zoomChanged.connect(self.on_zoom)
         self.canvas.cursorMoved.connect(self.on_cursor)
         self.canvas.maskChanged.connect(self.on_mask_changed)
+        self.canvas.viewChanged.connect(self.on_view_changed)
 
     def set_tool(self, key):
         self.canvas.tool = key
-        names = {"brush": "画笔蒙版", "eraser": "橡皮", "hand": "抓手", "zoom": "缩放"}
+        self.canvas.setCursor(Qt.OpenHandCursor if key == "hand"
+                              else (Qt.CrossCursor if key in ("rect", "wand")
+                                    else Qt.ArrowCursor))
+        names = {"brush": "画笔蒙版", "eraser": "橡皮", "rect": "矩形选框",
+                 "wand": "魔棒", "quick": "快速选择", "hand": "抓手", "zoom": "缩放"}
         self.tool_label.setText(" " + names.get(key, key))
+        # 抓手和缩放不看画笔参数，整组收起，选项栏跟着变窄
+        # 直接 setVisible 控件会被工具栏的 QWidgetAction 又显示回来，只能关 action
+        self.act_brush.setVisible(key in ("brush", "eraser", "quick"))
+        self.act_tol.setVisible(key in ("wand", "quick"))
+        self.act_sel.setVisible(key in ("brush", "eraser", "rect", "wand", "quick"))
 
     def on_brush_size(self, v):
         self.canvas.brush_size = v
@@ -689,6 +792,36 @@ class MainWindow(QMainWindow):
 
     def on_brush_mode(self, idx):
         self.canvas.brush_mode = "subtract" if idx == 1 else "add"
+
+    def on_tolerance(self, v):
+        self.canvas.tolerance = v
+
+    def on_view_mode(self, mode):
+        self.canvas.set_view_mode(mode)
+        self._sync_view_buttons(mode)
+
+    def on_view_changed(self, mode):
+        self._sync_view_buttons(mode)
+        self.grp_view.setEnabled(self.canvas.has_result())
+
+    def _sync_view_buttons(self, mode):
+        for btn, m in ((self.btn_v_orig, "original"),
+                       (self.btn_v_split, "split"),
+                       (self.btn_v_res, "result")):
+            btn.setChecked(m == mode)
+
+    def set_ui_scale(self, pct):
+        uiconf.save(ROOT, scale=(1.0 if pct is None else pct / 100.0))
+        tip = "跟随系统" if pct is None else "%d%%" % pct
+        QMessageBox.information(self, "界面缩放",
+                                "已设为 %s，重启 GC 后生效。\n当前窗口是旧比例，先关掉重开。" % tip)
+
+    def on_split_axis(self):
+        axis = "h" if self.canvas.split_axis == "v" else "v"
+        self.canvas.set_split_axis(axis)
+        self.btn_axis.setText("⇄" if axis == "v" else "⇅")
+        self.statusBar().showMessage(
+            "分割线改成%s拖动" % ("左右" if axis == "v" else "上下"), 3000)
 
     def on_feather_mask(self):
         if self.canvas.image is None:
@@ -900,8 +1033,11 @@ class MainWindow(QMainWindow):
             self.btn_gen.set_look(False)
             self.btn_apply.setEnabled(True)
             self._repolish(self.btn_apply, "primary")
-            self.preview.show_image(out, "预览")
-            self.statusBar().showMessage("预览完成：%s" % out, 8000)
+            # 出图后不弹新窗口，直接在画布上做原图/预览对照（同 LrC 参考视图）
+            if self.canvas.set_result(out):
+                self.grp_view.setEnabled(True)
+                self._sync_view_buttons("split")
+            self.statusBar().showMessage("预览完成：拖动中间的分割线对比，满意后点应用", 10000)
         else:
             # 正式图回填画布，导出和下一轮创作都基于它
             self.canvas.load_image(out)
@@ -909,7 +1045,6 @@ class MainWindow(QMainWindow):
             self.src_card.set_image(out, self.canvas.image.width(), self.canvas.image.height())
             self.setWindowTitle("GC — %s" % os.path.basename(out))
             self._reset_buttons()
-            self.preview.show_image(out, "正式图")
             self.statusBar().showMessage("正式图已保存：%s" % out, 10000)
 
     def on_gen_failed(self, msg):
@@ -937,6 +1072,11 @@ class MainWindow(QMainWindow):
 
 
 def main():
+    # 自己接管缩放：QT_SCALE_FACTOR 会盖掉按系统 DPI 自动算出的比例，
+    # 否则 2K + 175% 下窗口和每个控件都被放大一遍
+    scale = uiconf.load(ROOT).get("scale", uiconf.DEFAULT)
+    if scale:
+        os.environ["QT_SCALE_FACTOR"] = "%.2f" % float(scale)
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
     QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(sys.argv)
