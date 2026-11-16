@@ -8,6 +8,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+# ComfyUI 只把执行/采样事件推给提交任务的 client_id，界面订阅 websocket 时必须用同一个值
+CLIENT_ID = "gc-ui"
+
 
 class ComfyError(RuntimeError):
     pass
@@ -73,7 +76,7 @@ class ComfyClient:
             method="POST")
         return json.loads(self._open(req, timeout=60))["name"]
 
-    def queue_prompt(self, workflow, client_id="gc"):
+    def queue_prompt(self, workflow, client_id=CLIENT_ID):
         resp = json.loads(self._post_json("/prompt", {"prompt": workflow, "client_id": client_id}))
         if "prompt_id" not in resp:
             raise ComfyError(f"提交失败: {resp}")

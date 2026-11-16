@@ -3,6 +3,8 @@ import os
 import subprocess
 import sys
 
+import bootstrap  # 先定缩放再碰 PyQt5：Qt 加载时就读 QT_SCALE_FACTOR
+
 import numpy as np
 from PIL import Image
 from PyQt5.QtCore import QSize, Qt, QTimer
@@ -18,6 +20,8 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, APP_DIR)
 from core import paths
 ROOT = paths.root()
+UI_SCALE = bootstrap.apply()
+UI_FONT = bootstrap.font_size()
 DATA = os.path.join(ROOT, "data")
 MODELS = os.path.join(ROOT, "models")
 API_PATH = os.path.join(ROOT, "config", "api_models.json")
@@ -40,12 +44,13 @@ from ui.model_list import ModelList
 from ui.model_page import ModelPage
 from ui.gear_button import GearButton
 from ui.preview_settings import PreviewSettings
+from ui.sidebar import SideRail
 from ui.worker import EngineProbe, EngineStarter, GenWorker
 
-QSS = """
+_QSS = """
 QMainWindow, QDialog { background: #2d2d2d; }
 QWidget { background: #2d2d2d; color: #d0d0d0;
-    font-family: "Microsoft YaHei UI", "Segoe UI"; font-size: 13px; }
+    font-family: "Microsoft YaHei UI", "Segoe UI"; font-size: $FSpx; }
 QLabel, QCheckBox, QToolBar QLabel, QToolBar QCheckBox { background: transparent; }
 QMenuBar { background: #252525; border-bottom: 1px solid #1a1a1a; }
 QMenuBar::item { padding: 5px 10px; background: transparent; }
@@ -77,10 +82,10 @@ QPushButton#primary { background: #2d8ceb; border: none; color: #ffffff; font-we
 QPushButton#primary:hover { background: #3d9cfb; }
 QPushButton#primary:disabled { background: #444444; color: #888888; }
 QLabel#title { color: #8a8a8a; font-weight: bold; padding: 6px 0 2px 0; }
-QLabel#hint { color: #6a6a6a; font-size: 11px; }
-QLabel#est { color: #7a7a7a; font-size: 11px; }
+QLabel#hint { color: #6a6a6a; font-size: $FS2px; }
+QLabel#est { color: #7a7a7a; font-size: $FS2px; }
 QPushButton#ghost { background: transparent; border: 1px solid #4a4a4a; color: #b8b8b8;
-    padding: 3px 10px; border-radius: 5px; font-size: 11px; }
+    padding: 3px 10px; border-radius: 5px; font-size: $FS2px; }
 QPushButton#ghost:hover { background: #3a3a3a; color: #e6e6e6; }
 QPushButton#ghost:disabled { color: #5a5a5a; border-color: #3a3a3a; }
 QPushButton#seg { background: transparent; border: 1px solid #4a4a4a; border-radius: 4px;
@@ -88,13 +93,14 @@ QPushButton#seg { background: transparent; border: 1px solid #4a4a4a; border-rad
 QPushButton#seg:hover { background: #3a3a3a; }
 QPushButton#seg:checked { background: #2d8ceb; border-color: #2d8ceb; color: #ffffff; }
 QPushButton#seg:disabled { color: #4f4f4f; border-color: #333333; }
-QFrame#srcCard { background: transparent; border: 1px solid #3a3a3a; border-radius: 8px; }
+QFrame#srcCard { background: rgba(255, 255, 255, 18); border: 1px solid #3f3f3f; border-radius: 8px; }
+QFrame#srcCard:hover { background: rgba(255, 255, 255, 32); border-color: #5a5a5a; }
 QPushButton#collapse { background: transparent; border: none; color: #8a8a8a;
     font-weight: bold; text-align: left; padding: 6px 0 2px 0; }
 QPushButton#collapse:hover { color: #d0d0d0; }
 QLabel#srcThumb { background: #1a1a1a; border-radius: 6px; }
 QLabel#srcName { color: #e2e2e2; font-weight: bold; }
-QLabel#srcMeta { color: #787878; font-size: 11px; }
+QLabel#srcMeta { color: #787878; font-size: $FS2px; }
 QSlider::groove:horizontal { height: 3px; background: #1a1a1a; border-radius: 2px; }
 QSlider::sub-page:horizontal { background: #4a4a4a; border-radius: 2px; }
 QSlider::handle:horizontal { width: 11px; margin: -5px 0; border-radius: 5px; background: #a0a0a0; }
@@ -105,11 +111,36 @@ QListWidget::item:selected { background: #2d8ceb; color: #ffffff; }
 QCheckBox::indicator { width: 13px; height: 13px; }
 QCheckBox::indicator:unchecked { background: #1e1e1e; border: 1px solid #4a4a4a; border-radius: 2px; }
 QCheckBox::indicator:checked { background: #2d8ceb; border: 1px solid #2d8ceb; border-radius: 2px; }
+QScrollBar:vertical { background: transparent; width: 9px; margin: 0; }
+QScrollBar::handle:vertical { background: #4a4a4a; min-height: 26px; border-radius: 4px; }
+QScrollBar::handle:vertical:hover { background: #5f5f5f; }
+QScrollBar:horizontal { background: transparent; height: 9px; margin: 0; }
+QScrollBar::handle:horizontal { background: #4a4a4a; min-width: 26px; border-radius: 4px; }
+QScrollBar::handle:horizontal:hover { background: #5f5f5f; }
+QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
+QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }
 QStatusBar { background: #252525; color: #909090; border-top: 1px solid #1a1a1a; }
 QStatusBar::item { border: none; }
 QProgressBar#gen { background: #1e1e1e; border: none; border-radius: 4px; }
 QProgressBar#gen::chunk { background: #2d8ceb; border-radius: 4px; }
+QLabel#dockTitle { background: #252525; color: #9a9a9a; font-weight: bold; padding: 7px 0 5px 10px; }
+QWidget#rail { background: #252525; }
+QFrame#railLine { background: #3a3a3a; border: none; }
+QPushButton#tool { background: transparent; border: 1px solid transparent; border-radius: 5px;
+    padding: 0; color: #b8b8b8; font-size: $FSpx; }
+QPushButton#tool:hover { background: #3a3a3a; color: #e6e6e6; }
+QPushButton#tool:checked { background: #2d8ceb; border-color: #2d8ceb; color: #ffffff; }
+QPushButton#railseg { background: transparent; border: 1px solid #4a4a4a; border-radius: 5px;
+    padding: 0; color: #b0b0b0; font-size: $FS2px; }
+QPushButton#railseg:hover { background: #3a3a3a; }
+QPushButton#railseg:checked { background: #2d8ceb; border-color: #2d8ceb; color: #ffffff; }
+QPushButton#railseg:disabled { color: #4f4f4f; border-color: #333333; }
 """
+
+
+def qss(font=UI_FONT):
+    """字号来自 config/ui.json；只重刷样式表就能改，不用重启。"""
+    return _QSS.replace("$FS2", str(max(9, font - 2))).replace("$FS", str(font))
 
 TOOLS = [
     ("brush", "画", "画笔蒙版 (B)：涂出要重新生成的范围"),
@@ -117,7 +148,7 @@ TOOLS = [
     ("rect", "框", "矩形选框 (M)：拖出一个矩形并入选区"),
     ("wand", "魔", "魔棒 (W)：点一下，选中颜色相近的连续区域"),
     ("quick", "快", "快速选择 (Q)：按住拖动，吸附相近颜色"),
-    ("hand", "手", "抓手 (H)：拖动画面，也可以按住空格拖"),
+    ("hand", "指", "指针 (H)：拖动画面，也可以按住空格拖"),
     ("zoom", "缩", "缩放 (Z)：点一下放大，Alt+点击缩小，滚轮也行"),
 ]
 
@@ -147,6 +178,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("GC")
+        self.font_px = UI_FONT
         scr = QApplication.primaryScreen().availableGeometry()
         self.resize(min(1440, int(scr.width() * 0.94)),
                     min(900, int(scr.height() * 0.94)))
@@ -173,7 +205,7 @@ class MainWindow(QMainWindow):
         self._build_dock()
         self._build_status()
         self._wire()
-        self.setStyleSheet(QSS)
+        self.setStyleSheet(qss(UI_FONT))
         self.refresh_models()
         self._probe = None
         self._engine_timer = QTimer(self)
@@ -238,37 +270,48 @@ class MainWindow(QMainWindow):
         a.setShortcut("Ctrl+Alt+X")
         a.triggered.connect(self.on_split_axis)
         sub.addAction(a)
+        m = mb.addMenu("选项")
+        self.font_menu = m.addMenu("字体大小")
+        self.font_group = QActionGroup(self)
+        self.font_group.setExclusive(True)
+        for px in (11, 12, 13, 14, 16, 18):
+            a = QAction("%d px" % px, self)
+            a.setCheckable(True)
+            a.setChecked(px == self.font_px)
+            a.triggered.connect(lambda _=False, p=px: self.set_font(p))
+            self.font_group.addAction(a)
+            self.font_menu.addAction(a)
         m.addSeparator()
         sm = m.addMenu("界面缩放")
         for pct in (100, 125, 150, 175):
             a = QAction("%d%%" % pct, self)
             a.triggered.connect(lambda _=False, p=pct: self.set_ui_scale(p))
             sm.addAction(a)
-        a = QAction("跟随系统缩放", self)
-        a.triggered.connect(lambda: self.set_ui_scale(None))
+        a = QAction("恢复 100%（默认）", self)
+        a.triggered.connect(lambda: self.set_ui_scale(100))
         sm.addAction(a)
 
     def _build_toolbar(self):
-        tb = QToolBar("工具", self)
-        tb.setOrientation(Qt.Vertical)
-        tb.setMovable(False)
-        tb.setIconSize(QSize(20, 20))
-        tb.addSeparator()
-        self.addToolBar(Qt.LeftToolBarArea, tb)
-        self.tool_group = QActionGroup(self)
-        self.tool_group.setExclusive(True)
-        for key, glyph, tip in TOOLS:
-            act = QAction(glyph, self)
-            act.setToolTip(tip)
-            act.setShortcut(TOOL_KEYS.get(key, ""))
-            act.setCheckable(True)
-            act.setData(key)
-            act.triggered.connect(lambda checked, k=key: self.set_tool(k))
-            self.tool_group.addAction(act)
-            tb.addAction(act)
-            if key == "brush":
-                act.setChecked(True)
-        tb.addSeparator()
+        # 左侧用无框 QDockWidget 装自定义控件：竖向 QToolBar 只按 sizeHint 给高度，
+        # 底部的原图/对比/预览贴不到窗口底边
+        dock = QDockWidget("", self)
+        dock.setObjectName("railDock")
+        dock.setFeatures(QDockWidget.NoDockWidgetFeatures)
+        empty = QWidget()
+        empty.setFixedHeight(0)
+        dock.setTitleBarWidget(empty)
+        self.rail = SideRail(TOOLS)
+        self.rail.toolPicked.connect(self.set_tool)
+        self.rail.viewPicked.connect(self.on_view_mode)
+        self.rail.axisPicked.connect(self.on_split_axis)
+        dock.setWidget(self.rail)
+        self.addDockWidget(Qt.LeftDockWidgetArea, dock)
+        # 快捷键挂在窗口上：按钮不再是 QAction，仍要能按 B/M/W… 切工具
+        for key, sc in TOOL_KEYS.items():
+            a = QAction(self)
+            a.setShortcut(sc)
+            a.triggered.connect(lambda _=False, k=key: self.set_tool(k))
+            self.addAction(a)
 
     def _build_options(self):
         ob = QToolBar("选项", self)
@@ -368,34 +411,24 @@ class MainWindow(QMainWindow):
         self.region_label = QLabel("无")
         ob.addWidget(self.region_label)
 
-        # 原图 / 预览 对照：照 LrC 的参考视图做，出图后自动切到对比
+        # 缩放组：只有缩放工具时出现，给 PS 那种「适应窗口」
         ob.addSeparator()
-        self.grp_view = QWidget()
-        gv = QHBoxLayout(self.grp_view)
-        gv.setContentsMargins(0, 0, 0, 0)
-        gv.setSpacing(2)
-        self.btn_v_orig = QPushButton("原图")
-        self.btn_v_split = QPushButton("对比")
-        self.btn_v_res = QPushButton("预览")
-        for b, mode in ((self.btn_v_orig, "original"),
-                        (self.btn_v_split, "split"),
-                        (self.btn_v_res, "result")):
-            b.setObjectName("seg")
-            b.setCheckable(True)
-            b.clicked.connect(lambda _=False, m=mode: self.on_view_mode(m))
-            gv.addWidget(b)
-        self.btn_v_split.setChecked(True)
-        self.btn_v_orig.setToolTip("只看原始图像")
-        self.btn_v_split.setToolTip("原图与预览并排对照，拖中间那条线改比例")
-        self.btn_v_res.setToolTip("只看生成结果")
-        self.btn_axis = QPushButton("⇄")
-        self.btn_axis.setObjectName("seg")
-        self.btn_axis.setFixedWidth(34)
-        self.btn_axis.setToolTip("切换分割线方向：⇄ 左右拖动 / ⇅ 上下拖动")
-        self.btn_axis.clicked.connect(self.on_split_axis)
-        gv.addWidget(self.btn_axis)
-        ob.addWidget(self.grp_view)
-        self.grp_view.setEnabled(False)
+        self.grp_zoom = QWidget()
+        gz = QHBoxLayout(self.grp_zoom)
+        gz.setContentsMargins(0, 0, 0, 0)
+        gz.setSpacing(4)
+        self.btn_zoom_in = QPushButton("放大")
+        self.btn_zoom_out = QPushButton("缩小")
+        self.btn_zoom_fit = QPushButton("适应窗口")
+        self.btn_zoom_fit.setToolTip("把整张图塞进画布，快捷键 Ctrl+0")
+        self.btn_zoom_in.clicked.connect(lambda: self.zoom_center(1.25))
+        self.btn_zoom_out.clicked.connect(lambda: self.zoom_center(1 / 1.25))
+        self.btn_zoom_fit.clicked.connect(self.canvas.fit_view)
+        for b in (self.btn_zoom_in, self.btn_zoom_out, self.btn_zoom_fit):
+            b.setObjectName("ghost")
+            gz.addWidget(b)
+        self.act_zoom = ob.addWidget(self.grp_zoom)
+        self.set_tool("brush")
 
     def _build_dock(self):
         dock = QDockWidget("创作", self)
@@ -423,6 +456,7 @@ class MainWindow(QMainWindow):
 
         lay.addWidget(self._section("原始图"))
         self.src_card = SourceCard()
+        self.src_card.clicked.connect(self.open_image)
         lay.addWidget(self.src_card)
         lay.addSpacing(8)
 
@@ -501,13 +535,16 @@ class MainWindow(QMainWindow):
 
         shell = QWidget()
         outer = QVBoxLayout(shell)
-        outer.setContentsMargins(10, 8, 10, 8)
+        outer.setContentsMargins(10, 8, 10, 14)
         outer.setSpacing(6)
         outer.addWidget(scroll, 1)
         outer.addWidget(self.estimate_label)
         outer.addWidget(self.btn_gen)
         outer.addWidget(self.btn_apply)
         dock.setWidget(shell)
+        title = QLabel("创作")
+        title.setObjectName("dockTitle")
+        dock.setTitleBarWidget(title)
 
     def _section(self, text):
         lab = QLabel(text)
@@ -750,17 +787,17 @@ class MainWindow(QMainWindow):
 
     def set_tool(self, key):
         self.canvas.tool = key
-        self.canvas.setCursor(Qt.OpenHandCursor if key == "hand"
-                              else (Qt.CrossCursor if key in ("rect", "wand")
-                                    else Qt.ArrowCursor))
+        self.canvas.setCursor(Qt.CrossCursor if key in ("rect", "wand") else Qt.ArrowCursor)
+        self.rail.set_tool(key)
         names = {"brush": "画笔蒙版", "eraser": "橡皮", "rect": "矩形选框",
-                 "wand": "魔棒", "quick": "快速选择", "hand": "抓手", "zoom": "缩放"}
+                 "wand": "魔棒", "quick": "快速选择", "hand": "指针", "zoom": "缩放"}
         self.tool_label.setText(" " + names.get(key, key))
         # 抓手和缩放不看画笔参数，整组收起，选项栏跟着变窄
         # 直接 setVisible 控件会被工具栏的 QWidgetAction 又显示回来，只能关 action
         self.act_brush.setVisible(key in ("brush", "eraser", "quick"))
         self.act_tol.setVisible(key in ("wand", "quick"))
         self.act_sel.setVisible(key in ("brush", "eraser", "rect", "wand", "quick"))
+        self.act_zoom.setVisible(key == "zoom")
 
     def on_brush_size(self, v):
         self.canvas.brush_size = v
@@ -802,24 +839,33 @@ class MainWindow(QMainWindow):
 
     def on_view_changed(self, mode):
         self._sync_view_buttons(mode)
-        self.grp_view.setEnabled(self.canvas.has_result())
+        self.rail.set_view_enabled(self.canvas.has_result())
 
     def _sync_view_buttons(self, mode):
-        for btn, m in ((self.btn_v_orig, "original"),
-                       (self.btn_v_split, "split"),
-                       (self.btn_v_res, "result")):
-            btn.setChecked(m == mode)
+        self.rail.sync_view(mode)
 
     def set_ui_scale(self, pct):
-        uiconf.save(ROOT, scale=(1.0 if pct is None else pct / 100.0))
+        # 0 表示跟随系统：bootstrap 看到 0 就不设 QT_SCALE_FACTOR
+        uiconf.save(ROOT, scale=(0.0 if pct is None else pct / 100.0))
         tip = "跟随系统" if pct is None else "%d%%" % pct
         QMessageBox.information(self, "界面缩放",
-                                "已设为 %s，重启 GC 后生效。\n当前窗口是旧比例，先关掉重开。" % tip)
+                                "已设为 %s，重启 GC 后生效。\n当前窗口仍是旧比例，先关掉重开。" % tip)
+
+    def set_font(self, px):
+        """字号只影响样式表，改完立刻生效。"""
+        self.font_px = int(px)
+        uiconf.save(ROOT, font=self.font_px)
+        self.setStyleSheet(qss(self.font_px))
+        for a in self.font_menu.actions():
+            a.setChecked(a.text() == "%d px" % self.font_px)
+
+    def zoom_center(self, factor):
+        self.canvas.zoom_at(self.canvas.viewport().rect().center(), factor)
 
     def on_split_axis(self):
         axis = "h" if self.canvas.split_axis == "v" else "v"
         self.canvas.set_split_axis(axis)
-        self.btn_axis.setText("⇄" if axis == "v" else "⇅")
+        self.rail.set_axis(axis)
         self.statusBar().showMessage(
             "分割线改成%s拖动" % ("左右" if axis == "v" else "上下"), 3000)
 
@@ -1035,7 +1081,7 @@ class MainWindow(QMainWindow):
             self._repolish(self.btn_apply, "primary")
             # 出图后不弹新窗口，直接在画布上做原图/预览对照（同 LrC 参考视图）
             if self.canvas.set_result(out):
-                self.grp_view.setEnabled(True)
+                self.rail.set_view_enabled(True)
                 self._sync_view_buttons("split")
             self.statusBar().showMessage("预览完成：拖动中间的分割线对比，满意后点应用", 10000)
         else:
@@ -1072,13 +1118,8 @@ class MainWindow(QMainWindow):
 
 
 def main():
-    # 自己接管缩放：QT_SCALE_FACTOR 会盖掉按系统 DPI 自动算出的比例，
-    # 否则 2K + 175% 下窗口和每个控件都被放大一遍
-    scale = uiconf.load(ROOT).get("scale", uiconf.DEFAULT)
-    if scale:
-        os.environ["QT_SCALE_FACTOR"] = "%.2f" % float(scale)
-    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    # 缩放已经在 bootstrap 里按 ui.json 定好了，这里不能再动 DPI 属性：
+    # 一旦开 AA_EnableHighDpiScaling，Qt 会在系统 175% 上再乘一次
     app = QApplication(sys.argv)
     app.setApplicationName("GC")
     icon = paths.asset("gc.ico")

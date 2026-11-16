@@ -28,6 +28,18 @@ class PlusTile(QFrame):
         self.setFixedSize(size, size)
         self.setCursor(Qt.PointingHandCursor)
         self.setToolTip("添加素材图（可多选）")
+        # 和「原始图」卡片保持同一套底色/描边，两个区块才不会像两套风格
+        self._hover = False
+
+    def enterEvent(self, event):
+        self._hover = True
+        self.update()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._hover = False
+        self.update()
+        super().leaveEvent(event)
 
     def mouseReleaseEvent(self, event):
         if event.button() == Qt.LeftButton:
@@ -40,14 +52,15 @@ class PlusTile(QFrame):
         r = self.rect().adjusted(1, 1, -1, -1)
         on = self.isEnabled()
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 255, 255, 20 if on else 8))
+        p.setBrush(QColor(255, 255, 255, 32 if self._hover else (18 if on else 8)))
         p.drawRoundedRect(r, 8, 8)
-        pen = QPen(QColor(255, 255, 255, 110 if on else 50))
-        pen.setWidth(2)
+        pen = QPen(QColor(90, 90, 90) if self._hover else QColor(63, 63, 63))
+        pen.setWidth(1)
         p.setPen(pen)
         p.setBrush(Qt.NoBrush)
         p.drawRoundedRect(r, 8, 8)
-        pen.setWidth(3)
+        pen.setColor(QColor(255, 255, 255, 110 if on else 50))
+        pen.setWidth(2)
         p.setPen(pen)
         c = r.center()
         arm = r.width() // 6
@@ -170,31 +183,44 @@ class AssetStrip(QWidget):
 
 
 class SourceCard(QFrame):
-    """原始图像：缩略图 + 文件名 + 尺寸。"""
+    """原始图像卡：和素材缩略图同一套观感，整张卡可以直接点开选图。"""
+    clicked = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("srcCard")
+        self.setAttribute(Qt.WA_Hover, True)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setToolTip("点击选择原始图像（也可以从 LrC 用「编辑于」直接打开）")
+        self.setFixedHeight(92)
         lay = QHBoxLayout(self)
         lay.setContentsMargins(8, 8, 8, 8)
-        lay.setSpacing(10)
-        self.thumb = QLabel()
+        lay.setSpacing(12)
+        self.thumb = QLabel("＋")
         self.thumb.setObjectName("srcThumb")
-        self.thumb.setFixedSize(52, 52)
+        self.thumb.setFixedSize(76, 76)
+        self.thumb.setAlignment(Qt.AlignCenter)
         lay.addWidget(self.thumb)
         col = QVBoxLayout()
         col.setSpacing(3)
-        self.name = QLabel("未打开")
+        self.name = QLabel("点击选择原始图")
         self.name.setObjectName("srcName")
-        self.meta = QLabel("从 LrC 打开，或拖一张 PNG 进来")
+        self.meta = QLabel("或从 LrC 用「编辑于」打开")
         self.meta.setObjectName("srcMeta")
         self.meta.setWordWrap(True)
+        col.addStretch(1)
         col.addWidget(self.name)
         col.addWidget(self.meta)
         col.addStretch(1)
         lay.addLayout(col, 1)
 
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.clicked.emit()
+        super().mouseReleaseEvent(event)
+
     def set_image(self, path, width=None, height=None, label=None):
-        self.thumb.setPixmap(_cover(path, 52))
+        self.thumb.setPixmap(_cover(path, 76))
         # label 用来显示 LrC 那边的原文件名，path 可能是缓存 PNG
         self.name.setText(label or os.path.basename(path))
-        self.meta.setText(f"{width} × {height} px" if width else "")
+        self.meta.setText("%d × %d px" % (width, height) if width else "")
