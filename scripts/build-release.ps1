@@ -51,6 +51,12 @@ New-Item -ItemType Directory -Path $Rel | Out-Null
 Copy-Item (Join-Path $Root "dist\GC") -Destination $Rel -Recurse
 Copy-Item (Join-Path $Root "workflows") -Destination $Rel -Recurse
 Copy-Item (Join-Path $Root "README.md") -Destination $Rel
+# launcher so users do not have to dig into the GC subfolder
+$Bat = @(
+    '@echo off',
+    'start "" "%~dp0GC\GC.exe"'
+)
+Set-Content -Path (Join-Path $Rel "GC.bat") -Value $Bat -Encoding ASCII
 New-Item -ItemType Directory -Path (Join-Path $Rel "config") | Out-Null
 Copy-Item (Join-Path $Root "config\extra_model_paths.yaml") -Destination (Join-Path $Rel "config")
 Copy-Item (Join-Path $Root "config\api_models.example.json") -Destination (Join-Path $Rel "config")
