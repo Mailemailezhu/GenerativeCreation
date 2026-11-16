@@ -1,47 +1,38 @@
-"""LrC 入口：把 LrC 传进来的路径解析成真正要创作的那张 PNG。
+"""LrC 入口：把 LrC 传进来的路径解析成真正要创作的那张图。
 
-LrC 的「外部编辑器」只做两件事：先把照片导出成一份副本，再把副本路径当命令行参数
-交给外部程序；程序退出后它检查这个副本有没有被改过，改过就导回目录并堆叠。
+LrC 的「外部编辑器」只有 TIFF / PSD / JPEG 这些选项，没有 PNG。所以约定改成：
+用户在 LrC 里右键「编辑于 → GC」，LrC 导出一份 TIFF 副本并传路径进来，
+GC 自己把它转成无压缩 PNG 缓存（core/cache.py）再用。
 
-但 LrC 外部编辑器的格式选项里没有 PNG，而 ComfyUI 不读 ICC profile（Adobe RGB
-的数值会被当 sRGB 解释，整张发灰）。所以约定是：用户先用 LrC「导出」出 PNG
-（sRGB / 8-bit / 原尺寸），我们只拿 LrC 传来的文件名去导出目录里找同名 PNG。
+如果传进来的不是 TIFF 而是别的格式（或只是文件名），再按 同名 PNG → JPEG 兜底找。
 """
 from pathlib import Path
 
-
-EXTS = (".png", ".jpg", ".jpeg")   # PNG 优先，找不到才退 JPEG
+DIRECT = (".png", ".jpg", ".jpeg", ".tif", ".tiff", ".psd")
+FALLBACK = (".png", ".jpg", ".jpeg")
 
 
 def resolve(input_path, export_dirs=()):
     """返回 (图像路径 | None, 提示文本)。
 
     input_path 为空表示不是从 LrC 启动的，调用方走默认界面。
-    PNG 优先：无损，送进 ComfyUI 不会二次压缩；JPEG 只是兜底。
     """
     if not input_path:
         return None, ""
     p = Path(input_path)
-    if p.suffix.lower() in EXTS and p.is_file():
-        return str(p), f"已载入 {p.name}"
+    if p.suffix.lower() in DIRECT and p.is_file():
+        return str(p), ""
 
-    # 同名副本可能就在 LrC 导出的临时目录里，也可能在用户指定的导出文件夹
+    # LrC 有时只把副本放进临时目录，同名 PNG/JPEG 可能在导出文件夹里
     for d in [p.parent, *[Path(x) for x in export_dirs if x]]:
-        for ext in EXTS:
+        for ext in FALLBACK:
             cand = d / (p.stem + ext)
             if cand.is_file():
                 kind = "PNG" if cand.suffix.lower() == ".png" else "JPEG"
-                return str(cand), f"已载入同目录 {kind}：{cand.name}"
+                return str(cand), "已载入同目录 %s：%s" % (kind, cand.name)
 
     return None, (
-        f"LrC 传进来的是 {p.name}，没找到同名 PNG 或 JPEG。\n\n"
-        "请在 LrC 里「导出」一张 PNG（sRGB / 8-bit / 原尺寸）到同一文件夹，"
-        "再重新从 LrC 打开本程序；也可以直接拖一张 PNG 进来。"
-    )
-
-
-def siblings(png_path):
-    """列出同一张照片可能存在的其它版本，方便界面上切换。"""
-    p = Path(png_path)
-    return sorted(str(x) for x in p.parent.glob(p.stem + "*") if x.suffix.lower() in
-                  {".png", ".jpg", ".jpeg", ".tif", ".tiff"})
+        "LrC 传进来的是 %s，没找到能读的副本。\n\n"
+        "请在 LrC 里「编辑于 → 在外部编辑器中打开」，文件格式选 TIFF"
+        "（8 位 / sRGB），再打开一次；也可以直接把图片拖进本程序。"
+    ) % p.name

@@ -11,13 +11,15 @@ class GenWorker(QThread):
     done = pyqtSignal(dict)
     failed = pyqtSignal(str)
 
-    def __init__(self, **kw):
+    def __init__(self, fn=None, **kw):
         super().__init__()
+        # fn 允许把同一套进度/完成信号复用到本地档和远程 API 档
+        self.fn = fn or pipeline.run
         self.kw = kw
 
     def run(self):
         try:
-            info = pipeline.run(progress=lambda p, m: self.progress.emit(p, m), **self.kw)
+            info = self.fn(progress=lambda p, m: self.progress.emit(p, m), **self.kw)
             self.done.emit(info)
         except Exception as e:
             self.failed.emit("%s: %s" % (type(e).__name__, e))

@@ -3,6 +3,7 @@ from PyQt5.QtCore import pyqtSignal
 from PyQt5.QtWidgets import QListWidget, QListWidgetItem, QPushButton, QVBoxLayout, QWidget
 
 STATE_TEXT = {"installed": "已安装", "ready": "可安装", "blocked": "装不下"}
+API_ID = "@api"
 
 
 class ModelList(QWidget):
@@ -32,15 +33,25 @@ class ModelList(QWidget):
             it = QListWidgetItem("尚未安装主模型 — 点下方「添加模型」")
             it.setFlags(it.flags() & ~1)
             self.list.addItem(it)
-            return
-        for e in entries:
-            label = e["name"]
-            if e.get("state") != "installed":
-                label += "  ·  " + STATE_TEXT.get(e.get("state"), "")
-            it = QListWidgetItem(label)
-            it.setData(0x0100, e["id"])
-            self.list.addItem(it)
-        self.list.setCurrentRow(0)
+        else:
+            for e in entries:
+                label = e["name"]
+                if e.get("state") and e.get("state") != "installed":
+                    label += "  ·  " + STATE_TEXT.get(e.get("state"), "")
+                it = QListWidgetItem(label)
+                it.setData(0x0100, e["id"])
+                self.list.addItem(it)
+        it = QListWidgetItem("＋ API 方案…")
+        it.setData(0x0100, API_ID)
+        self.list.addItem(it)
+        row = self.list.sizeHintForRow(0) or 23
+        self.list.setFixedHeight(min(5, self.list.count()) * row + 2 * self.list.frameWidth() + 2)
+        picked = 0
+        for i in range(self.list.count()):
+            if current and self.list.item(i).data(0x0100) == current:
+                picked = i
+                break
+        self.list.setCurrentRow(picked)
 
     def current_id(self):
         it = self.list.currentItem()

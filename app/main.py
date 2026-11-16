@@ -5,7 +5,8 @@ import sys
 import numpy as np
 from PIL import Image
 from PyQt5.QtCore import QSize, Qt, QTimer
-from PyQt5.QtWidgets import (QAction, QActionGroup, QApplication, QCheckBox, QDockWidget,
+from PyQt5.QtWidgets import (QAction, QActionGroup, QApplication, QCheckBox, QComboBox,
+                             QDockWidget,
                              QDoubleSpinBox, QFileDialog, QFormLayout, QHBoxLayout,
                              QLabel, QMainWindow, QMessageBox, QProgressBar, QPushButton,
                              QSlider, QSpinBox, QTextEdit, QToolBar, QVBoxLayout, QWidget)
@@ -15,16 +16,20 @@ sys.path.insert(0, APP_DIR)
 ROOT = os.path.dirname(APP_DIR)
 DATA = os.path.join(ROOT, "data")
 MODELS = os.path.join(ROOT, "models")
+API_PATH = os.path.join(ROOT, "config", "api_models.json")
 os.makedirs(DATA, exist_ok=True)
 
-from core import catalog, exporter, hwprobe, lrc, prompt_tools
+from core import apimodels, cache, catalog, exporter, hwprobe, lrc, pipeline, prompt_tools
 from core.comfy_ws import ProgressWatcher
+from ui.api_page import ApiPage
 from ui.canvas import CanvasView
 from ui.cards import AssetStrip, SourceCard
 from ui.export_dialog import ExportDialog
 from ui.model_list import ModelList
 from ui.model_page import ModelPage
+from ui.gear_button import GearButton
 from ui.preview import PreviewWindow
+from ui.preview_settings import PreviewSettings
 from ui.worker import EngineProbe, GenWorker
 
 QSS = """
@@ -47,6 +52,8 @@ QDockWidget::title { background: #252525; padding: 6px 8px; }
 QLineEdit, QTextEdit, QSpinBox, QDoubleSpinBox {
     background: #1e1e1e; border: 1px solid #3f3f3f; border-radius: 3px;
     padding: 4px; color: #d0d0d0; selection-background-color: #2d8ceb; }
+QSpinBox:disabled, QDoubleSpinBox:disabled {
+    color: #5f5f5f; background: #242424; border-color: #333333; }
 QPushButton { background: #3a3a3a; border: 1px solid #4a4a4a; border-radius: 3px;
     padding: 6px 10px; color: #d0d0d0; }
 QPushButton:hover { background: #454545; }
@@ -122,6 +129,10 @@ class MainWindow(QMainWindow):
         self._draft_path = None
         self._busy = False
         self._worker = None
+        # 预览档按原图长边等比缩放的百分比，0.10 就是 10%
+        self.preview_ratio = 0.10
+        self._src_orig = None
+        self.model_id = None
         self.preview = PreviewWindow(self)
         self.watcher = ProgressWatcher()
         self.watcher.progress.connect(self.on_progress)
@@ -218,6 +229,47 @@ class MainWindow(QMainWindow):
         self.size_label.setMinimumWidth(46)
         ob.addWidget(self.size_label)
         self.size_slider.valueChanged.connect(self.on_brush_size)
+        ob.addWidget(QLabel("硬度"))
+        self.hard_slider = QSlider(Qt.Horizontal)
+        self.hard_slider.setRange(0, 100)
+        self.hard_slider.setValue(80)
+        self.hard_slider.setFixedWidth(96)
+        self.hard_slider.setToolTip("笔刷边缘的软硬：100 是硬边，0 是整笔柔化（同 PS 的硬度）")
+        self.hard_slider.valueChanged.connect(self.on_hardness)
+        ob.addWidget(self.hard_slider)
+        self.hard_label = QLabel("80%")
+        self.hard_label.setMinimumWidth(42)
+        ob.addWidget(self.hard_label)
+        ob.addWidget(QLabel("不透明度"))
+        self.op_slider = QSlider(Qt.Horizontal)
+        self.op_slider.setRange(5, 100)
+        self.op_slider.setValue(100)
+        self.op_slider.setFixedWidth(90)
+        self.op_slider.setToolTip("单笔最大浓度；调低后同一处反复涂抹才逐渐加深")
+        self.op_slider.valueChanged.connect(self.on_opacity)
+        ob.addWidget(self.op_slider)
+        self.op_label = QLabel("100%")
+        self.op_label.setMinimumWidth(42)
+        ob.addWidget(self.op_label)
+        ob.addWidget(QLabel("羽化"))
+        self.feather_spin = QSpinBox()
+        self.feather_spin.setRange(0, 80)
+        self.feather_spin.setValue(0)
+        self.feather_spin.setFixedWidth(62)
+        self.feather_spin.setSpecialValueText("自动")
+        self.feather_spin.setToolTip("生成时蒙版边缘的过渡宽度；自动 = 按选区短边的 6% 算。改完可点右侧按钮直接柔化蒙版")
+        ob.addWidget(self.feather_spin)
+        self.btn_feather = QPushButton("羽化选区")
+        self.btn_feather.setToolTip("对当前蒙版本身做羽化，可 Ctrl+Z 撤销（同 PS 的选择 → 修改 → 羽化）")
+        self.btn_feather.clicked.connect(self.on_feather_mask)
+        ob.addWidget(self.btn_feather)
+        ob.addWidget(QLabel("模式"))
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["添加", "减去"])
+        self.mode_combo.setFixedWidth(64)
+        self.mode_combo.setToolTip("添加 = 扩大选区；减去 = 从选区里擦掉")
+        self.mode_combo.currentIndexChanged.connect(self.on_brush_mode)
+        ob.addWidget(self.mode_combo)
         ob.addSeparator()
         self.show_mask_cb = QCheckBox("显示蒙版")
         self.show_mask_cb.setChecked(True)
@@ -243,6 +295,7 @@ class MainWindow(QMainWindow):
         lay.addWidget(self._section("模型"))
         self.model_list = ModelList()
         self.model_list.addRequested.connect(self.open_model_page)
+        self.model_list.modelSelected.connect(self.on_model_selected)
         lay.addWidget(self.model_list)
         lay.addSpacing(8)
 
@@ -303,11 +356,12 @@ class MainWindow(QMainWindow):
         self.steps_spin.valueChanged.connect(self.on_steps_changed)
         self.on_steps_changed()
 
-        self.btn_gen = QPushButton("生成预览图")
-        self.btn_gen.setObjectName("primary")
+        self.btn_gen = GearButton("生成预览图")
         self.btn_gen.setMinimumHeight(34)
         self.btn_gen.setToolTip(TIPS["gen"])
         self.btn_gen.clicked.connect(self.on_generate)
+        self.btn_gen.gearClicked.connect(self.open_preview_settings)
+        self.btn_gen.gear.setToolTip("预览大小设置")
         lay.addWidget(self.btn_gen)
 
         self.btn_apply = QPushButton("应用预览并生成正式图")
@@ -331,10 +385,66 @@ class MainWindow(QMainWindow):
 
     def refresh_models(self):
         try:
-            entries = catalog.evaluate(MODELS, hwprobe.summary(MODELS))
+            entries = [e for e in catalog.evaluate(MODELS, hwprobe.summary(MODELS))
+                       if e.get("state") == "installed"]
         except Exception:
             entries = []
-        self.model_list.set_models(entries)
+        for it in apimodels.load(API_PATH):
+            entries.append({"id": "api:" + apimodels.mask_key(it),
+                            "name": "API · " + it.get("name", it.get("model", "未命名"))})
+        ids = [e["id"] for e in entries]
+        if not ids:
+            self.model_id = None
+        elif self.model_id not in ids:
+            self.model_id = ids[0]
+        self.model_list.set_models(entries, self.model_id)
+        if hasattr(self, "steps_spin"):
+            self._sync_param_state()
+
+    def on_model_selected(self, mid):
+        if mid == "@api":
+            self.open_api_page()
+            return
+        if mid.startswith("api:"):
+            item = self._api_item(mid)
+            if item:
+                self.model_id = mid
+                self.statusBar().showMessage(
+                    "已切换到远程方案：%s（%s）" % (item.get("name"), item.get("model")), 6000)
+            self.refresh_models()
+            return
+        e = catalog.by_id(mid)
+        if not e:
+            return
+        self.model_id = mid
+        self.refresh_models()
+        self.statusBar().showMessage("已切换主模型：%s（下一次生成生效）" % e["name"], 5000)
+
+    def _api_item(self, mid=None):
+        mid = mid or self.model_id or ""
+        if not mid.startswith("api:"):
+            return None
+        for it in apimodels.load(API_PATH):
+            if "api:" + apimodels.mask_key(it) == mid:
+                return it
+        return None
+
+    def open_api_page(self):
+        dlg = ApiPage(parent=self)
+        if not dlg.exec_() or not dlg.item:
+            self.refresh_models()
+            return
+        key = apimodels.mask_key(dlg.item)
+        items = [it for it in apimodels.load(API_PATH) if apimodels.mask_key(it) != key]
+        items.append(dlg.item)
+        apimodels.save(API_PATH, items)
+        self.model_id = "api:" + key
+        self.refresh_models()
+        self.statusBar().showMessage("已添加并选中 API 方案：%s" % dlg.item["name"], 6000)
+
+    def _unet(self):
+        e = catalog.by_id(self.model_id) if self.model_id else None
+        return e["file"] if e else None
 
     def check_engine(self):
         if self._probe and self._probe.isRunning():
@@ -361,6 +471,18 @@ class MainWindow(QMainWindow):
         self.asset_hint.setText("可缺省" if n == 0 else "%d 张" % n)
 
     def on_steps_changed(self, *_):
+        self._sync_param_state()
+
+    def _sync_param_state(self):
+        """本地档的步数/CFG/素材对远程接口没有意义，选中 API 方案时直接禁用，免得用户白调。"""
+        local = self._api_item() is None
+        self.steps_spin.setEnabled(local)
+        self.cfg_spin.setEnabled(local)
+        self.asset_strip.setEnabled(local)
+        self.asset_strip.setToolTip("" if local else "远程接口只接受一张原图，素材图暂不参与")
+        if not local:
+            self.estimate_label.setText("预计：耗时与画质取决于远程服务")
+            return
         s = self.steps_spin.value()
         self.estimate_label.setText("预计：预览约 %d 秒 · 正式图约 %d 秒"
                                     % (max(3, s * 5), max(8, s * 22)))
@@ -444,41 +566,90 @@ class MainWindow(QMainWindow):
         self.region_label.setText("%d×%d" % (int(b.width()), int(b.height())))
         self.sb_mask.setText("蒙版 %.1f%%" % (self.canvas.mask_ratio() * 100))
 
+    def on_hardness(self, v):
+        self.canvas.hardness = v
+        self.hard_label.setText("%d%%" % v)
+
+    def on_opacity(self, v):
+        self.canvas.opacity = v
+        self.op_label.setText("%d%%" % v)
+
+    def on_brush_mode(self, idx):
+        self.canvas.brush_mode = "subtract" if idx == 1 else "add"
+
+    def on_feather_mask(self):
+        if self.canvas.image is None:
+            return
+        if self.canvas.mask_bounds() is None:
+            QMessageBox.information(self, "提示", "蒙版是空的，先涂一点再羽化。")
+            return
+        px = self.feather_spin.value() or 12
+        if self.canvas.apply_feather(px):
+            self.statusBar().showMessage("已羽化 %.0f px（Ctrl+Z 可撤销）" % px, 4000)
+
+    def _draft_side(self):
+        """预览档送模型的 crop 长边。按原图长边乘比例，再夹到 256~2048。"""
+        if self.canvas.image is None:
+            return 512
+        long_edge = max(self.canvas.image.width(), self.canvas.image.height())
+        return max(256, min(2048, int(round(long_edge * self.preview_ratio))))
+
+    def open_preview_settings(self):
+        img = self.canvas.image
+        size = (img.width(), img.height()) if img else (0, 0)
+        pop = PreviewSettings(size, self.preview_ratio, self)
+        pop.changed.connect(self.on_preview_ratio)
+        br = self.btn_gen.mapToGlobal(self.btn_gen.rect().bottomRight())
+        pop.move(br.x() - 272, br.y() + 6)
+        pop.show()
+
+    def on_preview_ratio(self, r):
+        self.preview_ratio = r
+        self.btn_gen.setText("重新生成预览图" if self._draft_path else "生成预览图")
+        self.statusBar().showMessage(
+            "预览大小 %.0f%%：送模型的 crop 长边约 %d px" % (r * 100, self._draft_side()), 5000)
+
+    def _load_source(self, path, note=""):
+        """TIFF/PSD 之类先转成无压缩 PNG 缓存再进画布，画布只认 8 位 RGB。"""
+        png, msg = cache.ensure(path, os.path.join(DATA, "cache"))
+        if not png or not self.canvas.load_image(png):
+            return False
+        self._source_png = png
+        self._src_orig = path
+        self.setWindowTitle("GC — %s" % os.path.basename(path))
+        self.src_card.set_image(png, self.canvas.image.width(), self.canvas.image.height(),
+                                 label=os.path.basename(path))
+        self._reset_buttons()
+        self.statusBar().showMessage(note or msg, 8000)
+        return True
+
     def open_image(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "打开图像", "", "图像 (*.png *.jpg *.jpeg *.tif *.tiff *.bmp *.webp)")
+            self, "打开图像", "", "图像 (*.png *.jpg *.jpeg *.tif *.tiff *.psd *.bmp *.webp)")
         if not path:
             return
-        if self.canvas.load_image(path):
-            self._source_png = path
-            self.setWindowTitle("GC — %s" % os.path.basename(path))
-            self.src_card.set_image(path, self.canvas.image.width, self.canvas.image.height)
-            self._reset_buttons()
-            self.statusBar().showMessage("已打开 %s" % path, 4000)
-        else:
+        if not self._load_source(path):
             QMessageBox.warning(self, "打开失败", "无法读取该图像。")
 
     def open_from_lrc(self, path):
-        """从 LrC 的「编辑于」启动：拿文件名去导出目录里找同名 PNG。"""
+        """从 LrC 的「编辑于」启动。外部编辑器的格式下拉没有 PNG，主流做法是给 TIFF。"""
         self._lrc_source = path
-        png, msg = lrc.resolve(path)
-        if png and self.canvas.load_image(png):
-            self._source_png = png
-            self.setWindowTitle("GC — %s" % os.path.basename(png))
-            self.src_card.set_image(png, self.canvas.image.width, self.canvas.image.height)
-            self._reset_buttons()
-            self.statusBar().showMessage(msg, 6000)
+        src, msg = lrc.resolve(path)
+        if not src:
+            QMessageBox.information(self, "没有可用的图像", msg)
+            self.statusBar().showMessage(
+                "请在 LrC 用「编辑于 → 在外部编辑器中打开」，格式选 TIFF", 0)
             return
-        QMessageBox.information(self, "需要先导出 PNG", msg)
-        self.statusBar().showMessage("请先在 LrC 导出 PNG（sRGB / 8-bit / 原尺寸）", 0)
+        if not self._load_source(src, msg):
+            QMessageBox.warning(self, "打开失败", "LrC 传来的文件读不出来：\n" + src)
 
     def save_result(self):
         if self.canvas.image is None:
             QMessageBox.information(self, "提示", "还没有打开图像。")
             return
         start = ""
-        if self._source_png:
-            start = os.path.splitext(self._source_png)[0] + "-AI.png"
+        if self._src_orig:
+            start = os.path.splitext(self._src_orig)[0] + "-AI.png"
         path, _ = QFileDialog.getSaveFileName(self, "保存结果", start, "PNG (*.png)")
         if not path:
             return
@@ -493,7 +664,7 @@ class MainWindow(QMainWindow):
         if self.canvas.image is None:
             QMessageBox.information(self, "提示", "还没有打开图像。")
             return
-        base = self._source_png or os.path.join(DATA, "export.png")
+        base = self._src_orig or self._source_png or os.path.join(DATA, "export.png")
         dlg = ExportDialog(self.canvas.image, os.path.dirname(base),
                            os.path.splitext(os.path.basename(base))[0], self)
         if not dlg.exec_():
@@ -531,33 +702,49 @@ class MainWindow(QMainWindow):
         if not prompt:
             QMessageBox.information(self, "提示", "请先写提示词。")
             return
-        self._start(dict(
-            image_path=self._source_png,
-            mask_path=self._save_mask(),
+        self._start(self._gen_kw(
             prompt=prompt,
             out_path=os.path.join(DATA, "_gc_preview.png"),
             stage="draft",
-            asset_paths=tuple(self.asset_strip.paths()),
-            steps=self.steps_spin.value(),
-            cfg=self.cfg_spin.value(),
         ), "预览")
 
     def on_apply(self):
         if self._busy or not self._draft_path:
             return
-        base = self._source_png or os.path.join(DATA, "result.png")
+        base = self._src_orig or os.path.join(DATA, "result.png")
         out = os.path.splitext(base)[0] + "-AI.png"
-        self._start(dict(
-            image_path=self._source_png,
-            mask_path=self._save_mask(),
+        self._start(self._gen_kw(
             prompt=self.prompt_edit.toPlainText().strip(),
             out_path=out,
             stage="final",
-            draft_path=self._draft_path,
-            asset_paths=tuple(self.asset_strip.paths()),
-            steps=self.steps_spin.value(),
-            cfg=self.cfg_spin.value(),
         ), "正式图")
+
+    def _gen_kw(self, prompt, out_path, stage):
+        """本地档和 API 档参数不同，在这里统一组装，避免两处各写一份。"""
+        kw = dict(
+            image_path=self._source_png,
+            mask_path=self._save_mask(),
+            prompt=prompt,
+            out_path=out_path,
+            stage=stage,
+            feather=self.feather_spin.value() or None,
+        )
+        api = self._api_item()
+        if api:
+            kw["fn"] = pipeline.run_api
+            kw["api"] = api
+            kw["draft_side"] = self._draft_side()
+        else:
+            kw.update(
+                asset_paths=tuple(self.asset_strip.paths()),
+                steps=self.steps_spin.value(),
+                cfg=self.cfg_spin.value(),
+                draft_side=self._draft_side(),
+                unet=self._unet(),
+            )
+            if stage == "final" and self._draft_path:
+                kw["draft_path"] = self._draft_path
+        return kw
 
     def _start(self, kw, label):
         self._busy = True
@@ -570,7 +757,8 @@ class MainWindow(QMainWindow):
         self.pb_label.show()
         self.statusBar().showMessage("正在生成%s…" % label)
         self.watcher.start()
-        self._worker = GenWorker(**kw)
+        fn = kw.pop("fn", None)
+        self._worker = GenWorker(fn=fn, **kw)
         self._worker.progress.connect(self.on_progress)
         self._worker.done.connect(self.on_gen_done)
         self._worker.failed.connect(self.on_gen_failed)
@@ -596,7 +784,7 @@ class MainWindow(QMainWindow):
         if info.get("stage") == "draft":
             self._draft_path = out
             self.btn_gen.setText("重新生成预览图")
-            self._repolish(self.btn_gen, "")
+            self.btn_gen.set_look(False)
             self.btn_apply.setEnabled(True)
             self._repolish(self.btn_apply, "primary")
             self.preview.show_image(out, "预览")
@@ -605,7 +793,7 @@ class MainWindow(QMainWindow):
             # 正式图回填画布，导出和下一轮创作都基于它
             self.canvas.load_image(out)
             self._source_png = out
-            self.src_card.set_image(out, self.canvas.image.width, self.canvas.image.height)
+            self.src_card.set_image(out, self.canvas.image.width(), self.canvas.image.height())
             self.setWindowTitle("GC — %s" % os.path.basename(out))
             self._reset_buttons()
             self.preview.show_image(out, "正式图")
@@ -629,7 +817,7 @@ class MainWindow(QMainWindow):
     def _reset_buttons(self):
         self._draft_path = None
         self.btn_gen.setText("生成预览图")
-        self._repolish(self.btn_gen, "primary")
+        self.btn_gen.set_look(True)
         self.btn_gen.setEnabled(True)
         self.btn_apply.setEnabled(False)
         self._repolish(self.btn_apply, "")

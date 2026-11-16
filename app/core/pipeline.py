@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image
 
-from . import assets, image_ops as ops
+from . import apimodels, assets, image_ops as ops
 from .comfy_client import ComfyClient, ComfyError, first_image
 
 WORKFLOW = Path(__file__).resolve().parents[2] / "workflows" / "qwen_edit_2511_inpaint.json"
@@ -22,7 +22,7 @@ FINAL_SIDE = 2048
 
 
 def build_workflow(crop_size, prompt, img_name, mask_name, steps=4, cfg=1.0, seed=0,
-                   draft_name=None, asset_name=None):
+                   draft_name=None, asset_name=None, unet=None):
     """按档位裁掉不用的参考图节点。
 
     没接上的 LoadImage 会让整个 prompt 校验失败，所以未使用的节点要真的删掉，
@@ -35,6 +35,8 @@ def build_workflow(crop_size, prompt, img_name, mask_name, steps=4, cfg=1.0, see
     wf["7"]["inputs"]["image"] = mask_name
     wf["11"]["inputs"]["prompt"] = prompt
     wf["13"]["inputs"].update({"steps": steps, "cfg": cfg, "seed": seed})
+    if unet:
+        wf["1"]["inputs"]["unet_name"] = unet
 
     if draft_name:
         wf["16"]["inputs"]["image"] = draft_name
@@ -55,7 +57,8 @@ def build_workflow(crop_size, prompt, img_name, mask_name, steps=4, cfg=1.0, see
     return wf
 
 
-def prepare(image_path, mask_path, stage="draft", pad=180, min_side=512):
+def prepare(image_path, mask_path, stage="draft", pad=180, min_side=512,
+            max_side=None):
     img = Image.open(image_path).convert("RGB")
     mask = Image.open(mask_path).convert("L")
     if mask.size != img.size:
@@ -63,7 +66,8 @@ def prepare(image_path, mask_path, stage="draft", pad=180, min_side=512):
     bbox = ops.mask_bbox(np.asarray(mask))
     if bbox is None:
         raise ValueError("蒙版为空")
-    max_side = DRAFT_SIDE if stage == "draft" else FINAL_SIDE
+    if max_side is None:
+        max_side = DRAFT_SIDE if stage == "draft" else FINAL_SIDE
     geo = ops.plan_crop(img.width, img.height, bbox, pad=pad, max_side=max_side,
                         min_side=min_side)
     return img, mask, geo
@@ -72,7 +76,7 @@ def prepare(image_path, mask_path, stage="draft", pad=180, min_side=512):
 def run(image_path, mask_path, prompt, out_path, stage="draft", draft_path=None,
         asset_paths=(), preview_composite=True, host="127.0.0.1", port=8188,
         steps=4, cfg=1.0, seed=None, feather=None, color_match=True, timeout=900,
-        progress=None):
+        progress=None, draft_side=None, unet=None):
     """跑一档，把结果写到 out_path。
 
     stage="draft" 时可以 preview_composite=False，只拿 crop 小图不贴回。
@@ -84,7 +88,8 @@ def run(image_path, mask_path, prompt, out_path, stage="draft", draft_path=None,
         raise ValueError("定稿档需要草稿图作为风格参考")
 
     _tick(progress, 2, "准备选区")
-    img, mask, geo = prepare(image_path, mask_path, stage=stage)
+    img, mask, geo = prepare(image_path, mask_path, stage=stage,
+                             max_side=draft_side if stage == "draft" else None)
     crop, size = geo["crop"], geo["size"]
     crop_img = ops.crop_image(img, crop, size)
     crop_mask = ops.crop_mask(mask, crop, size)
@@ -114,7 +119,8 @@ def run(image_path, mask_path, prompt, out_path, stage="draft", draft_path=None,
 
     _tick(progress, 16, "组装工作流")
     wf = build_workflow(size, prompt, img_name, mask_name, steps=steps, cfg=cfg,
-                        seed=seed, draft_name=draft_name, asset_name=asset_name)
+                        seed=seed, draft_name=draft_name, asset_name=asset_name,
+                        unet=unet)
     _tick(progress, 19, "提交任务")
     pid = client.queue_prompt(wf)
     entry = client.wait_for(pid, timeout=timeout)
@@ -147,3 +153,50 @@ def _tick(progress, pct, msg):
 def _save(pil_img, path):
     pil_img.save(path)
     return str(path)
+
+
+def run_api(image_path, mask_path, prompt, out_path, api, stage="draft", draft_side=None,
+            feather=None, preview_composite=True, progress=None, timeout=600):
+    """走远程 /images/edits：贴回逻辑和本地档完全一样，只是采样在别人机器上跑。"""
+    _tick(progress, 2, "准备选区")
+    img, mask, geo = prepare(image_path, mask_path, stage=stage,
+                             max_side=draft_side if stage == "draft" else None)
+    crop, size = geo["crop"], geo["size"]
+    crop_img = ops.crop_image(img, crop, size)
+    crop_mask = ops.crop_mask(mask, crop, size)
+
+    _tick(progress, 10, "对齐接口尺寸")
+    api_size = apimodels.pick_size(size[0], size[1])
+    payload = crop_img.resize(api_size, Image.LANCZOS)
+    scaled_mask = crop_mask.resize(api_size, Image.LANCZOS)
+    # OpenAI 约定：蒙版里透明的地方才会被重画
+    alpha = scaled_mask.point(lambda v: 0 if v > 96 else 255)
+    mask_img = Image.new("RGBA", api_size, (255, 255, 255, 255))
+    mask_img.putalpha(alpha)
+    bi, bm = io.BytesIO(), io.BytesIO()
+    payload.save(bi, "PNG")
+    mask_img.save(bm, "PNG")
+
+    _tick(progress, 20, "上传并等待远程生成")
+    raw, used = apimodels.edit(api["base"], api["key"], api["model"], bi.getvalue(),
+                               bm.getvalue(), prompt, api_size, timeout=timeout)
+    _tick(progress, 88, "读取结果")
+    gen = Image.open(io.BytesIO(raw)).convert("RGB")
+    if gen.size != api_size:
+        gen = gen.resize(api_size, Image.LANCZOS)
+    gen = gen.resize(size, Image.LANCZOS)
+
+    info = {"stage": stage, "api": api.get("name"), "size": used, "crop": crop}
+    if stage == "draft" and not preview_composite:
+        _save(gen, out_path)
+        return {**info, "composited": False, "out": str(out_path)}
+
+    if feather is None:
+        feather = ops.auto_feather(ops.mask_bbox(np.asarray(mask)))
+    gen = ops.match_color(gen, crop_img, crop_mask)
+    _tick(progress, 92, "贴回原图")
+    result = ops.composite_back(img, gen, crop_mask, crop, feather=feather)
+    _tick(progress, 97, "保存")
+    _save(result, out_path)
+    return {**info, "composited": True, "feather": feather, "out": str(out_path)}
+

@@ -37,6 +37,14 @@ for _e in GGUF:
                              "diffusion_models/" + _e["file"], "主模型")]
 
 
+def by_id(mid):
+    """按 id 取档位；判断主模型用哪份权重文件靠它。"""
+    for e in GGUF:
+        if e["id"] == mid:
+            return e
+    return None
+
+
 def installed(models_root, entry):
     for f in entry["files"]:
         p = os.path.join(models_root, f["dest"])

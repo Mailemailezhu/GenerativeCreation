@@ -1,8 +1,10 @@
 """画布与蒙版：显示大图、缩放平移、画笔涂抹出可编辑区域。"""
+import numpy as np
+from PIL import Image, ImageFilter
 from PyQt5.QtCore import Qt, QPointF, QRectF, pyqtSignal
 from PyQt5.QtGui import (QImage, QPixmap, QPainter, QPainterPath, QPainterPathStroker,
                          QPen, QColor, QBrush)
-from PyQt5.QtWidgets import (QGraphicsView, QGraphicsScene, QGraphicsPathItem)
+from PyQt5.QtWidgets import QGraphicsView, QGraphicsScene
 
 BRUSH_COLOR = QColor(255, 64, 64)
 MASK_OPACITY = 0.55
@@ -38,9 +40,13 @@ class CanvasView(QGraphicsView):
         self._space_down = False
         self._undo = []
         self._redo = []
+        self._cursor_scene = None
 
         self.zoom = 1.0
         self.brush_size = 45
+        self.hardness = 80        # 0 = 全是柔边，100 = 硬边
+        self.opacity = 100        # 单笔最大浓度
+        self.brush_mode = "add"   # add / subtract
         self.tool = "brush"
         self.mask_visible = True
 
@@ -91,7 +97,23 @@ class CanvasView(QGraphicsView):
         self.zoom = z
         self.zoomChanged.emit(self.zoom)
 
-    # ---------- 蒙版 ----------
+    # ---------- 蒙版数据 ----------
+    def _alpha_of(self, img):
+        a = img.convertToFormat(QImage.Format_Alpha8)
+        buf = a.constBits()
+        buf.setsize(a.byteCount())
+        arr = np.frombuffer(bytes(buf), np.uint8).reshape(a.height(), a.bytesPerLine())
+        return arr[:, :a.width()].copy()
+
+    def _mask_from_alpha(self, arr):
+        h, w = arr.shape
+        buf = np.zeros((h, w, 4), np.uint8)
+        buf[..., 0] = BRUSH_COLOR.blue()
+        buf[..., 1] = BRUSH_COLOR.green()
+        buf[..., 2] = BRUSH_COLOR.red()
+        buf[..., 3] = arr
+        return QImage(buf.tobytes(), w, h, w * 4, QImage.Format_ARGB32).copy()
+
     def _refresh_mask_item(self):
         if self._mask_item is not None:
             self._mask_item.setPixmap(QPixmap.fromImage(self.mask))
@@ -147,6 +169,18 @@ class CanvasView(QGraphicsView):
         self._refresh_mask_item()
         self.maskChanged.emit()
 
+    def apply_feather(self, px):
+        """对整张蒙版做羽化（PS 的「选择 → 修改 → 羽化」）。"""
+        if self.mask is None or px <= 0:
+            return False
+        self.push_undo()
+        a = self._alpha_of(self.mask)
+        a = np.asarray(Image.fromarray(a, "L").filter(ImageFilter.GaussianBlur(px)), np.uint8)
+        self.mask = self._mask_from_alpha(a)
+        self._refresh_mask_item()
+        self.maskChanged.emit()
+        return True
+
     def mask_alpha(self):
         if self.mask is None:
             return None
@@ -167,7 +201,7 @@ class CanvasView(QGraphicsView):
         minx, miny, maxx, maxy = sw, sh, -1, -1
         for y in range(sh):
             row = data[y * bpl: y * bpl + sw]
-            nz = [i for i, v in enumerate(row) if v]
+            nz = [i for i, v in enumerate(row) if v > 12]
             if not nz:
                 continue
             if y < miny:
@@ -226,6 +260,7 @@ class CanvasView(QGraphicsView):
 
     def mouseMoveEvent(self, e):
         p = self.mapToScene(e.pos())
+        self._cursor_scene = p
         self.cursorMoved.emit(int(p.x()), int(p.y()))
         if self._panning and self._pan_from is not None:
             d = e.pos() - self._pan_from
@@ -236,8 +271,15 @@ class CanvasView(QGraphicsView):
         if self._live_path is not None and self._live_item is not None:
             self._live_path.lineTo(p)
             self._live_item.setPath(self._live_path)
+        elif self.tool in ("brush", "eraser"):
+            self.viewport().update()
             return
         super().mouseMoveEvent(e)
+
+    def leaveEvent(self, e):
+        self._cursor_scene = None
+        self.viewport().update()
+        super().leaveEvent(e)
 
     def mouseReleaseEvent(self, e):
         if self._panning:
@@ -251,27 +293,60 @@ class CanvasView(QGraphicsView):
         super().mouseReleaseEvent(e)
 
     def _commit_stroke(self):
+        """一笔落定：先画到透明层，再按硬度做柔化，最后与蒙版做 max / 减法合成。"""
         path = self._live_path
         self.scene().removeItem(self._live_item)
         self._live_item = None
         self._live_path = None
 
         stroker = QPainterPathStroker()
-        stroker.setWidth(self.brush_size)
+        stroker.setWidth(max(1.0, float(self.brush_size)))
         stroker.setCapStyle(Qt.RoundCap)
         stroker.setJoinStyle(Qt.RoundJoin)
         outline = stroker.createStroke(path)
 
-        p = QPainter(self.mask)
+        layer = QImage(self.mask.size(), QImage.Format_ARGB32)
+        layer.fill(Qt.transparent)
+        p = QPainter(layer)
         p.setRenderHint(QPainter.Antialiasing)
-        if self.tool == "eraser":
-            p.setCompositionMode(QPainter.CompositionMode_Clear)
-            p.fillPath(outline, Qt.black)
-        else:
-            p.fillPath(outline, BRUSH_COLOR)
+        p.fillPath(outline, Qt.white)
         p.end()
+
+        src = self._alpha_of(layer).astype(np.float32) / 255.0
+        soft = self.brush_size * 0.5 * (1.0 - self.hardness / 100.0)
+        if soft >= 0.6:
+            blurred = Image.fromarray((src * 255).astype(np.uint8), "L")
+            src = np.asarray(blurred.filter(ImageFilter.GaussianBlur(soft)), np.float32) / 255.0
+
+        cur = self._alpha_of(self.mask).astype(np.float32) / 255.0
+        op = max(0.0, min(1.0, self.opacity / 100.0))
+        if self.tool == "eraser" or self.brush_mode == "subtract":
+            cur = cur * (1.0 - src * op)
+        else:
+            cur = np.maximum(cur, src * op)
+        self.mask = self._mask_from_alpha((cur * 255).clip(0, 255).astype(np.uint8))
         self._refresh_mask_item()
         self.maskChanged.emit()
+
+    def drawForeground(self, p, rect):
+        super().drawForeground(p, rect)
+        if self.image is None or self.tool not in ("brush", "eraser"):
+            return
+        if self._cursor_scene is None:
+            return
+        r = self.brush_size / 2.0
+        pen = QPen(QColor(255, 255, 255, 210), 1)
+        pen.setCosmetic(True)
+        p.setPen(pen)
+        p.setBrush(Qt.NoBrush)
+        p.drawEllipse(self._cursor_scene, r, r)
+        if self.hardness < 100:
+            inner = r * max(0.0, self.hardness / 100.0)
+            if inner > 1.5:
+                pen2 = QPen(QColor(255, 255, 255, 110), 1)
+                pen2.setCosmetic(True)
+                p.setPen(pen2)
+                p.drawEllipse(self._cursor_scene, inner, inner)
 
     def keyPressEvent(self, e):
         if e.key() == Qt.Key_Space and not e.isAutoRepeat():

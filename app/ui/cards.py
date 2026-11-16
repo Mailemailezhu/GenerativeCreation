@@ -38,10 +38,11 @@ class PlusTile(QFrame):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         r = self.rect().adjusted(1, 1, -1, -1)
+        on = self.isEnabled()
         p.setPen(Qt.NoPen)
-        p.setBrush(QColor(255, 255, 255, 20))
+        p.setBrush(QColor(255, 255, 255, 20 if on else 8))
         p.drawRoundedRect(r, 8, 8)
-        pen = QPen(QColor(255, 255, 255, 110))
+        pen = QPen(QColor(255, 255, 255, 110 if on else 50))
         pen.setWidth(2)
         p.setPen(pen)
         p.setBrush(Qt.NoBrush)
@@ -192,7 +193,8 @@ class SourceCard(QFrame):
         col.addStretch(1)
         lay.addLayout(col, 1)
 
-    def set_image(self, path, width=None, height=None):
+    def set_image(self, path, width=None, height=None, label=None):
         self.thumb.setPixmap(_cover(path, 52))
-        self.name.setText(os.path.basename(path))
+        # label 用来显示 LrC 那边的原文件名，path 可能是缓存 PNG
+        self.name.setText(label or os.path.basename(path))
         self.meta.setText(f"{width} × {height} px" if width else "")
