@@ -10,6 +10,12 @@
     <tip key="cfg">CFG = 提示词引导强度（Classifier-Free Guidance）。
 数值越高越死板地贴提示词、色彩更硬；越低越自由。
 本工作流挂了 4 步加速 LoRA，CFG 必须保持 1.0，调高会过曝、发糊甚至崩图。</tip>
+    <tip key="guidance">引导强度（FluxGuidance），只对 FLUX 生效。
+实测 30 附近纸飞机最实、背景最容易发白；22~25 背景保真更好但元素变少。
+FLUX Fill 认「整幅场景描述」，不是编辑指令，提示词写法要和 Qwen 反过来。</tip>
+    <tip key="steps_flux">FLUX 是 20 步起步的模型，没有加速 LoRA。
+实测 1024 预览约 2 秒/步（40 秒一张），1536 正式档约 7 秒/步（140 秒一张）。
+步数少于 12 会明显糊，30 步收益已经很小。</tip>
     <tip key="gen">先用低分辨率出一张预览：选区裁切后长边 512，约 20 秒。
 只看构图和效果，不代表最终画质；重新生成会覆盖上一张。</tip>
     <tip key="apply">把这张预览当作风格参考，用 原图 + 预览 + 素材图 三张参考重绘正式图。
@@ -37,7 +43,7 @@
     <item key="show_mask">关掉后画布上只显示原图，用来检查生成效果</item>
     <item key="zoom_fit">把整张图塞进画布，快捷键 Ctrl+0</item>
     <item key="model_head">点开可以选择主模型、添加模型或接远程 API</item>
-    <item key="adv_head">融合强度、羽化、步数、CFG、种子、色彩对齐。默认值适合当前模型，改之前先看提示</item>
+    <item key="adv_head">融合强度、羽化、步数、CFG（FLUX 另有引导强度）、种子、色彩对齐。默认值适合当前模型，改之前先看提示</item>
     <item key="preview_size">预览大小设置</item>
     <item key="model_list">当前软件能直接驱动的主模型。点「添加模型」可以看这台电脑还能装哪些。</item>
     <item key="model_add">读取本机显卡与内存，列出能直接用于本软件的模型，一键安装</item>

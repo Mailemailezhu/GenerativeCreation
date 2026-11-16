@@ -125,7 +125,17 @@ LrC 15.1 的「编辑于 → 在外部编辑器中打开」格式下拉只有 TI
 
 右侧列表只显示已安装的本地模型和已配置的 API 方案。
 「＋ 添加模型」会读取本机显存与内存，列出这台机器能直接跑的档位并一键下载
-（每档 = GGUF 主模型 + text encoder + VAE + Lightning LoRA）。
+（每档 = GGUF 主模型 + text encoder + VAE，Qwen 档位另带 Lightning 加速 LoRA）。
+
+本地有两族，切换时步数/引导强度默认值、正式档尺寸、工作流一起换：
+
+| 族 | 工作流 | 默认步数 | 正式档长边 | 素材图 | 说明 |
+|---|---|---|---|---|---|
+| Qwen-Image-Edit-2511 | `workflows/qwen_edit_2511_inpaint.json` | 4（Lightning LoRA） | 2048 | 支持（最多三张参考） | 会认提示词里的物体、能接素材；KF 采样快 |
+| FLUX.1-Fill-dev | `workflows/flux_fill_inpaint.json` | 20 | 1536 | 不支持 | 专用修补模型，蒙版边缘融合更自然；只认英文，慢一倍 |
+
+FLUX 的 CFG 固定 1.0（蒸馏模型），引导强度走 `FluxGuidance`（默认 30）；素材图和锁构图对它无意义，选中时自动禁用。
+两族的 crop/蒙版/贴回/导出逻辑完全共用，只有采样节点链不同。
 
 ## API 方案
 

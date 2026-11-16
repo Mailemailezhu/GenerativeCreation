@@ -227,6 +227,10 @@ class MainWindow(QMainWindow):
         a = QAction("启动本地引擎", self)
         a.triggered.connect(self.launch_engine)
         m.addAction(a)
+        a = QAction("重启本地引擎", self)
+        a.setToolTip("引擎只在启动时扫一遍 models/，装完新模型或切到 FLUX 后要重启才认")
+        a.triggered.connect(self.restart_engine)
+        m.addAction(a)
         a = QAction("退出", self)
         a.setShortcut("Ctrl+Q")
         a.triggered.connect(self.close)
@@ -518,6 +522,12 @@ class MainWindow(QMainWindow):
         self.cfg_spin.setValue(1.0)
         self.cfg_spin.setToolTip(TIPS["cfg"])
         af.addRow(self._tip("CFG", TIPS["cfg"]), self.cfg_spin)
+        self.guidance_spin = QDoubleSpinBox()
+        self.guidance_spin.setRange(1.0, 60.0)
+        self.guidance_spin.setSingleStep(0.5)
+        self.guidance_spin.setValue(30.0)
+        self.guidance_spin.setToolTip(TIPS["guidance"])
+        af.addRow(self._tip("引导强度", TIPS["guidance"]), self.guidance_spin)
         self.seed_spin = QSpinBox()
         self.seed_spin.setRange(-1, 2 ** 31 - 1)
         self.seed_spin.setValue(-1)
@@ -605,13 +615,18 @@ class MainWindow(QMainWindow):
             entries.append({"id": "api:" + apimodels.mask_key(it),
                             "name": "API · " + it.get("name", it.get("model", "未命名"))})
         ids = [e["id"] for e in entries]
+        changed = False
         if not ids:
             self.model_id = None
         elif self.model_id not in ids:
             self.model_id = ids[0]
+            changed = True
         self.model_list.set_models(entries, self.model_id)
         self._update_model_head(entries)
         if hasattr(self, "steps_spin"):
+            if changed:
+                # 选中的模型被卸掉了，兜底换回第一个：步数也得跟着回退，否则会留下别的族的默认值
+                self._apply_entry_defaults(catalog.by_id(self.model_id))
             self._sync_param_state()
 
     def _update_model_head(self, entries=None):
@@ -642,6 +657,8 @@ class MainWindow(QMainWindow):
         if not e:
             return
         self.model_id = mid
+        # 两族的默认步数差一个数量级，切过去必须跟着换，否则会拿 4 步跑 FLUX
+        self._apply_entry_defaults(e)
         self.refresh_models()
         self.statusBar().showMessage("已切换主模型：%s（下一次生成生效）" % e["name"], 5000)
 
@@ -666,6 +683,12 @@ class MainWindow(QMainWindow):
         self.model_id = "api:" + key
         self.refresh_models()
         self.statusBar().showMessage("已添加并选中 API 方案：%s" % dlg.item["name"], 6000)
+
+    def _apply_entry_defaults(self, e):
+        if not e:
+            return
+        self.steps_spin.setValue(int(e.get("steps", 4)))
+        self.guidance_spin.setValue(float(e.get("guidance", 30.0)))
 
     def _unet(self):
         e = catalog.by_id(self.model_id) if self.model_id else None
@@ -707,6 +730,40 @@ class MainWindow(QMainWindow):
                                             creationflags=flags, stdout=log, stderr=log)
         return True
 
+    def restart_engine(self):
+        """引擎启动时把模型目录扫进内存，装完新权重必须重启才认。"""
+        if self._engine_proc and self._engine_proc.poll() is None:
+            self._engine_proc.terminate()
+            try:
+                self._engine_proc.wait(10)
+            except Exception:
+                self._engine_proc.kill()
+        else:
+            # 不是本进程拉起来的（脚本或上次留下的），按端口找 pid 杀掉
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(self._engine_pid() or 0)],
+                           creationflags=0x08000000 if os.name == "nt" else 0)
+        self._engine_proc = None
+        self._engine_ok = False
+        self.on_engine_state(False)
+        if self.launch_engine():
+            self._starter = EngineStarter()
+            self._starter.result.connect(self.on_engine_ready)
+            self._starter.start()
+            self.statusBar().showMessage("正在重启引擎（约 40 秒）…")
+
+    @staticmethod
+    def _engine_pid():
+        """从 netstat 里找 8188 的监听进程，Windows 上没别的可靠办法。"""
+        try:
+            out = subprocess.run(["netstat", "-ano"], capture_output=True, text=True,
+                                 timeout=15, creationflags=0x08000000 if os.name == "nt" else 0)
+        except Exception:
+            return None
+        for line in out.stdout.splitlines():
+            if ":8188" in line and "LISTENING" in line:
+                return int(line.split()[-1])
+        return None
+
     def ensure_engine(self, kw, label):
         """远程 API 档不需要本地引擎；本地档引擎没起就先拉起来再生成。"""
         if kw.get("fn") is not None or self._engine_ok:
@@ -744,9 +801,20 @@ class MainWindow(QMainWindow):
                             "\n首次使用请先运行 scripts/start-engine.ps1 装好依赖与模型。")
 
     def open_model_page(self):
+        n0 = self._installed_count()
         dlg = ModelPage(MODELS, self)
         dlg.exec_()
         self.refresh_models()
+        if self._installed_count() > n0 and self._engine_ok:
+            self.statusBar().showMessage("新模型已下载，重启引擎后才认（文件 → 重启本地引擎）", 9000)
+
+    @staticmethod
+    def _installed_count():
+        try:
+            return sum(1 for e in catalog.evaluate(MODELS, hwprobe.summary(MODELS))
+                       if e.get("state") == "installed")
+        except Exception:
+            return 0
 
     def on_adv_toggle(self, on):
         self.adv_box.setVisible(on)
@@ -759,24 +827,40 @@ class MainWindow(QMainWindow):
     def on_steps_changed(self, *_):
         self._sync_param_state()
 
+    def _family(self):
+        """当前模型属于哪一族：qwen 与 flux 的工作流和参数语义完全不同。"""
+        e = catalog.by_id(self.model_id) if self.model_id else None
+        return (e or {}).get("family", "qwen")
+
     def _sync_param_state(self):
         """本地档的步数/CFG/素材对远程接口没有意义，选中 API 方案时直接禁用，免得用户白调。"""
         local = self._api_item() is None
+        fam = self._family()
         self.steps_spin.setEnabled(local)
-        self.cfg_spin.setEnabled(local)
-        self.denoise_spin.setEnabled(local)
+        self.cfg_spin.setEnabled(local and fam == "qwen")
+        self.guidance_spin.setEnabled(local and fam == "flux")
+        self.steps_spin.setToolTip(TIPS["steps"] if fam == "qwen" else TIPS["steps_flux"])
+        self.denoise_spin.setEnabled(local and fam == "qwen")
         self.feather_spin.setEnabled(local)
         self.seed_spin.setEnabled(local)
         self.cm_check.setEnabled(local)
-        self.lock_spin.setEnabled(local)
-        self.asset_strip.setEnabled(local)
-        self.asset_strip.setToolTip("" if local else "远程接口只接受一张原图，素材图暂不参与")
+        self.lock_spin.setEnabled(local and fam == "qwen")
+        # FLUX Fill 的节点里没有参考图槽位，送素材会被静默丢掉，不如直接禁用
+        self.asset_strip.setEnabled(local and fam == "qwen")
+        if not local:
+            self.asset_strip.setToolTip("远程接口只接受一张原图，素材图暂不参与")
+        elif fam == "flux":
+            self.asset_strip.setToolTip("FLUX Fill 只用蒙版重绘，不接素材图；需要素材请切回 Qwen")
+        else:
+            self.asset_strip.setToolTip("")
         if not local:
             self.estimate_label.setText("预计：耗时与画质取决于远程服务")
             return
         s = self.steps_spin.value()
+        # 实测：Qwen 4 步在 512 预览约 20 秒、2048 正式约 90 秒；FLUX 20 步在 1024 预览约 40 秒、1536 正式约 140 秒
+        per = (5, 22) if fam == "qwen" else (2, 7)
         self.estimate_label.setText("预计：预览约 %d 秒 · 正式图约 %d 秒"
-                                    % (max(3, s * 5), max(8, s * 22)))
+                                    % (max(3, s * per[0]), max(8, s * per[1])))
 
     def on_normalize_prompt(self):
         src = self.prompt_edit.toPlainText().strip()
@@ -1121,6 +1205,9 @@ class MainWindow(QMainWindow):
                 draft_side=self._draft_side(),
                 unet=self._unet(),
                 lock=self.lock_spin.value() if stage == "final" else 0.0,
+                family=self._family(),
+                guidance=self.guidance_spin.value(),
+                final_side=(catalog.by_id(self.model_id) or {}).get("final_side"),
             )
             if stage == "final" and self._draft_pil is not None:
                 kw["draft"] = self._draft_pil

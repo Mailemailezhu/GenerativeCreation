@@ -18,6 +18,7 @@ from . import apimodels, assets, image_ops as ops, paths
 from .comfy_client import ComfyClient, ComfyError, first_image
 
 WORKFLOW = Path(paths.root()) / "workflows" / "qwen_edit_2511_inpaint.json"
+FLUX_WORKFLOW = Path(paths.root()) / "workflows" / "flux_fill_inpaint.json"
 DRAFT_SIDE = 512
 FINAL_SIDE = 2048
 
@@ -69,6 +70,24 @@ def build_workflow(crop_size, prompt, img_name, mask_name, steps=4, cfg=1.0, see
     return wf
 
 
+def build_flux_workflow(prompt, img_name, mask_name, steps=20, guidance=30.0, seed=0,
+                        unet=None, t5="t5xxl_fp8_e4m3fn.safetensors",
+                        clip_l="clip_l.safetensors", vae="ae.safetensors"):
+    """FLUX.1 Fill 是专用 inpaint 模型：蒙版和 latent 都由 InpaintModelConditioning 生成，
+    提示词只写正向，负向必须留空（guidance 蒸馏模型不认 CFG 文本）。"""
+    wf = json.loads(FLUX_WORKFLOW.read_text(encoding="utf-8"))
+    wf["4"]["inputs"]["image"] = img_name
+    wf["5"]["inputs"]["image"] = mask_name
+    wf["7"]["inputs"]["text"] = prompt
+    wf["10"]["inputs"]["guidance"] = guidance
+    wf["11"]["inputs"].update({"steps": steps, "seed": seed})
+    wf["2"]["inputs"].update({"clip_name1": t5, "clip_name2": clip_l})
+    wf["3"]["inputs"]["vae_name"] = vae
+    if unet:
+        wf["1"]["inputs"]["unet_name"] = unet
+    return wf
+
+
 def _as_image(src, mode):
     """PIL 直接用，路径才打开；返回的图像与文件句柄无关。"""
     if isinstance(src, Image.Image):
@@ -101,7 +120,8 @@ def _png_bytes(pil_img):
 def run(image, mask, prompt, out_path=None, stage="draft", draft=None,
         asset_paths=(), preview_composite=True, host="127.0.0.1", port=8188,
         steps=4, cfg=1.0, seed=None, feather=None, color_match=True, timeout=900,
-        progress=None, draft_side=None, unet=None, denoise=1.0, lock=0.0):
+        progress=None, draft_side=None, unet=None, denoise=1.0, lock=0.0,
+        family="qwen", guidance=30.0, final_side=None):
     """跑一档，结果以 PIL 图放在返回值的 image 里。
 
     stage="draft" 时可以 preview_composite=False，只拿 crop 小图不贴回。
@@ -110,12 +130,13 @@ def run(image, mask, prompt, out_path=None, stage="draft", draft=None,
     """
     if stage not in ("draft", "final"):
         raise ValueError("未知档位: %s" % stage)
-    if stage == "final" and draft is None:
+    # FLUX Fill 是专用修图模型，不靠草稿传风格，定稿档可以单独跑
+    if stage == "final" and draft is None and family == "qwen":
         raise ValueError("定稿档需要草稿图作为风格参考")
 
     _tick(progress, 2, "准备选区")
     img, m, geo = prepare(image, mask, stage=stage,
-                          max_side=draft_side if stage == "draft" else None)
+                          max_side=draft_side if stage == "draft" else final_side)
     crop, size = geo["crop"], geo["size"]
     crop_img = ops.crop_image(img, crop, size)
     crop_mask = ops.crop_mask(m, crop, size)
@@ -157,11 +178,15 @@ def run(image, mask, prompt, out_path=None, stage="draft", draft=None,
         seed = random.randint(0, 2**31 - 1)
 
     _tick(progress, 16, "组装工作流")
-    # 融合强度只对定稿档有意义：草稿是全重画，再压低 denoise 就看不到新内容
-    wf = build_workflow(size, prompt, img_name, mask_name, steps=steps, cfg=cfg,
-                        seed=seed, draft_name=draft_name, asset_name=asset_name,
-                        unet=unet, denoise=denoise if stage == "final" else 1.0,
-                        lock_name=lock_name, lock_denoise=lock)
+    if family == "flux":
+        wf = build_flux_workflow(prompt, img_name, mask_name, steps=steps,
+                                 guidance=guidance, seed=seed, unet=unet)
+    else:
+        # 融合强度只对定稿档有意义：草稿是全重画，再压低 denoise 就看不到新内容
+        wf = build_workflow(size, prompt, img_name, mask_name, steps=steps, cfg=cfg,
+                            seed=seed, draft_name=draft_name, asset_name=asset_name,
+                            unet=unet, denoise=denoise if stage == "final" else 1.0,
+                            lock_name=lock_name, lock_denoise=lock)
     _tick(progress, 19, "提交任务")
     pid = client.queue_prompt(wf)
     entry = client.wait_for(pid, timeout=timeout)

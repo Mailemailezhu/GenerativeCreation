@@ -20,21 +20,44 @@ DEPS = [
        "loras/Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors", "4 步加速 LoRA · 必装"),
 ]
 
+FLUX_DEPS = [
+    _f("AI-ModelScope/flux_text_encoders", "t5xxl_fp8_e4m3fn.safetensors",
+       "text_encoders/t5xxl_fp8_e4m3fn.safetensors", "T5 文本编码器 · 必装"),
+    _f("AI-ModelScope/flux_text_encoders", "clip_l.safetensors",
+       "text_encoders/clip_l.safetensors", "CLIP-L · 必装"),
+    _f("black-forest-labs/FLUX.1-Fill-dev", "ae.safetensors",
+       "vae/ae.safetensors", "VAE · 必装"),
+]
+
 GGUF = [
     {"id": "qwen2511-q5", "name": "Qwen-Image-Edit-2511 · Q5_K_M", "tag": "推荐",
      "desc": "20B 主力模型，15.4GB。实测 4 步出 512 预览约 20 秒采样，画质与体积的平衡点。",
-     "vram": 11, "ram": 26, "file": "qwen-image-edit-2511-Q5_K_M.gguf"},
+     "vram": 11, "ram": 26, "file": "qwen-image-edit-2511-Q5_K_M.gguf",
+     "family": "qwen", "steps": 4, "guidance": 4.0, "final_side": 2048},
     {"id": "qwen2511-q4", "name": "Qwen-Image-Edit-2511 · Q4_K_M", "tag": "省显存",
      "desc": "12.9GB。显存或内存吃紧时的备选，细节略软，速度反而比 Q5 快。",
-     "vram": 10, "ram": 22, "file": "qwen-image-edit-2511-Q4_K_M.gguf"},
+     "vram": 10, "ram": 22, "file": "qwen-image-edit-2511-Q4_K_M.gguf",
+     "family": "qwen", "steps": 4, "guidance": 4.0, "final_side": 2048},
     {"id": "qwen2511-q8", "name": "Qwen-Image-Edit-2511 · Q8_0", "tag": "最高画质",
      "desc": "22.4GB。几乎无量化损失，但 32GB 内存下开 LrC 会频繁换页，出图慢一倍以上。",
-     "vram": 12, "ram": 30, "file": "qwen-image-edit-2511-Q8_0.gguf"},
+     "vram": 12, "ram": 30, "file": "qwen-image-edit-2511-Q8_0.gguf",
+     "family": "qwen", "steps": 4, "guidance": 4.0, "final_side": 2048},
+    {"id": "flux-fill-q5", "name": "FLUX.1-Fill-dev · Q5_0", "tag": "融合最强",
+     "desc": "12B 专用修补模型，8.3GB。按蒙版重绘，边缘融合和素材贴合明显强于 Qwen，"
+             "但只认英文提示词，20 步起步、比 Qwen 慢一倍。",
+     "vram": 11, "ram": 28, "file": "flux1-fill-dev-Q5_0.gguf",
+     "family": "flux", "steps": 20, "guidance": 30.0, "final_side": 1536},
 ]
 
+_QWEN_UNET = "unsloth/Qwen-Image-Edit-2511-GGUF"
 for _e in GGUF:
-    _e["files"] = DEPS + [_f("unsloth/Qwen-Image-Edit-2511-GGUF", _e["file"],
-                             "diffusion_models/" + _e["file"], "主模型")]
+    if _e.get("family") == "flux":
+        _e["files"] = FLUX_DEPS + [_f("AI-ModelScope/FLUX.1-Fill-dev-gguf",
+                                      "flux1-fill-dev-fp16-Q5_0-GGUF.gguf",
+                                      "diffusion_models/" + _e["file"], "主模型")]
+    else:
+        _e["files"] = DEPS + [_f(_QWEN_UNET, _e["file"],
+                                 "diffusion_models/" + _e["file"], "主模型")]
 
 
 def by_id(mid):
